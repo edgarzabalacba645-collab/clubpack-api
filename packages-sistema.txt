@@ -1,0 +1,8 @@
+# Dependencias de sistema (apt) que necesita este backend, además de
+# las librerías de requirements.txt. En un VPS Ubuntu/Debian:
+#
+#   sudo apt update && sudo apt install -y $(cat packages-sistema.txt | grep -v '^#')
+#
+ffmpeg
+libchromaprint-tools
+libsndfile1

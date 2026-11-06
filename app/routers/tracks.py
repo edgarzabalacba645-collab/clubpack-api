@@ -1,3 +1,4 @@
+import base64
 import logging
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
@@ -71,12 +72,19 @@ async def analizar_track(
 
     staging_id = staging.guardar(mp3_bytes, file.filename or "audio.mp3", usuario.user_id)
 
-    # Chequeo liviano (solo lee tags ID3, no vuelve a transcodificar) para
-    # saber si corresponde ofrecer la elección de portada en el frontend.
+    # Solo lee tags ID3, no vuelve a transcodificar. Si el archivo trae
+    # carátula embebida, se manda como preview en base64 — sin poder verla,
+    # es muy difícil decidir si conviene mantenerla o usar la de ClubPack
+    # (el usuario tendría que ir a buscarla por otro lado y volver).
+    caratula_preview: str | None = None
     try:
-        tiene_caratula = audio.extraer_caratula(mp3_bytes) is not None
+        caratula = audio.extraer_caratula(mp3_bytes)
+        if caratula:
+            imagen_bytes, extension = caratula
+            mime = "image/png" if extension == "png" else "image/jpeg"
+            caratula_preview = f"data:{mime};base64,{base64.b64encode(imagen_bytes).decode('ascii')}"
     except Exception:
-        tiene_caratula = False
+        caratula_preview = None
 
     return AnalisisTrackResponse(
         staging_id=staging_id,
@@ -88,7 +96,8 @@ async def analizar_track(
         fingerprint=analisis["fingerprint"],
         advertencias=advertencias,
         duplicados_sospechosos=[DuplicadoCandidato(**d) for d in duplicados_sospechosos],
-        tiene_caratula_original=tiene_caratula,
+        tiene_caratula_original=caratula_preview is not None,
+        caratula_original_preview=caratula_preview,
     )
 
 

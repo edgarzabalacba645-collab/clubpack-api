@@ -25,6 +25,11 @@ class AnalisisTrackResponse(BaseModel):
     # portada de ClubPack" cuando esto es True; si no hay carátula, va
     # derecho la de ClubPack sin preguntar nada.
     tiene_caratula_original: bool = False
+    # La carátula embebida en sí, como data URI (ej. "data:image/jpeg;
+    # base64,..."), para que el frontend la pueda mostrar antes de
+    # confirmar — sin esto, elegir "mantener la original" a ciegas no
+    # tiene sentido. None si no hay carátula.
+    caratula_original_preview: str | None = None
 
 
 class ConfirmarSubidaRequest(BaseModel):

@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 
 from .. import audio, duplicados, staging, storage, zip_utils
 from ..config import settings
-from ..deps import UsuarioAutenticado, requiere_acceso_activo, requiere_admin
+from ..deps import UsuarioAutenticado, get_usuario_actual, requiere_acceso_activo, requiere_admin
 from ..schemas import (
     AnalisisTrackResponse,
     ConfirmarSubidaRequest,
@@ -213,13 +213,23 @@ def confirmar_subida(
 def obtener_url_descarga(
     track_id: str,
     registrar: bool = True,
-    usuario: UsuarioAutenticado = Depends(requiere_acceso_activo),
+    usuario: UsuarioAutenticado = Depends(get_usuario_actual),
 ):
     """
     URL firmada para bajar (o previsualizar) un track.
     `registrar=false` la pide el player de preview del catálogo, para no
     contar una escucha como una descarga en el Top 50. El botón de
     descarga de verdad deja `registrar` en True (default).
+
+    A propósito esto YA NO exige `requiere_acceso_activo` de entrada: los
+    tracks de género "de prueba" (Cuarteto/Cachengue — ver policy
+    "ver_tracks_con_acceso" en sql/006_catalogo_freemium.sql) son visibles
+    para cualquier usuario logueado sin suscripción, así los DJs nuevos
+    pueden escuchar antes de sumarse. El SELECT de abajo ya respeta eso
+    por RLS — si no devuelve nada, este usuario no tiene permiso para ver
+    (ni por lo tanto escuchar) este track puntual. La descarga real
+    (`registrar=true`) sí exige suscripción activa siempre, sea cual sea
+    el género — por eso ese chequeo queda explícito acá, aparte de RLS.
     """
     resp = (
         usuario.client.table("tracks")
@@ -231,6 +241,17 @@ def obtener_url_descarga(
     track = resp.data
     if not track:
         raise HTTPException(status_code=404, detail="Track no encontrado.")
+
+    if registrar:
+        acceso = usuario.client.rpc("tiene_acceso_activo").execute()
+        if not acceso.data:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Necesitás una suscripción activa para descargar. "
+                    "Mientras tanto podés escuchar gratis los temas de Cuarteto y Cachengue."
+                ),
+            )
 
     nombre = f"{zip_utils.nombre_descarga(track)}.mp3"
     expira = 300

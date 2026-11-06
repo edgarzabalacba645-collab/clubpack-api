@@ -16,6 +16,12 @@ directorio temporal del propio proceso y en el dict solo se guarda la
 ruta: la memoria del proceso no crece con la cantidad de temas en espera,
 solo el disco (mucho más abundante que la RAM en estos planes chicos).
 
+`guardar()` recibe la ruta del MP3 ya transcodificado (ver
+app/routers/tracks.py) y lo MUEVE a este directorio de espera — nunca
+pasa por memoria como bytes, ni siquiera para sesiones largas (~1h,
+~200MB), que es justo el caso que antes podía tirar abajo el proceso por
+quedarse sin RAM en el plan gratuito de Render.
+
 Sigue siendo, a propósito, un solo proceso: para 20-30 DJs y un solo
 worker (ver README de deploy) alcanza. Si el backend llega a correr con
 varios workers/réplicas, esto hay que moverlo a algo compartido (Redis,
@@ -51,10 +57,6 @@ class ArchivoEnEspera:
     usuario_id: str
     expira_en: float = field(default_factory=lambda: time.time() + settings.STAGING_TTL_SEG)
 
-    @property
-    def contenido_mp3(self) -> bytes:
-        return self.ruta_mp3.read_bytes()
-
 
 _ESPERA: dict[str, ArchivoEnEspera] = {}
 _LOCK = threading.Lock()
@@ -76,12 +78,18 @@ def _purgar_vencidos():
             _borrar_archivo(entrada.ruta_mp3)
 
 
-def guardar(contenido_mp3: bytes, nombre_original: str, usuario_id: str) -> str:
+def guardar(ruta_mp3_origen: Path, nombre_original: str, usuario_id: str) -> str:
+    """
+    Mueve (no copia) el MP3 ya transcodificado desde su ubicación temporal
+    de la request de /analyze hacia el directorio de espera — un solo
+    archivo en disco en todo momento, nunca sus bytes duplicados en
+    memoria de Python.
+    """
     with _LOCK:
         _purgar_vencidos()
         staging_id = str(uuid4())
         ruta = _DIR_ESPERA / f"{staging_id}.mp3"
-        ruta.write_bytes(contenido_mp3)
+        shutil.move(str(ruta_mp3_origen), str(ruta))
         _ESPERA[staging_id] = ArchivoEnEspera(
             ruta_mp3=ruta,
             nombre_original=nombre_original,

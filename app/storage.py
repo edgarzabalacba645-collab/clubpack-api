@@ -12,6 +12,7 @@ cambiando st.secrets/st.cache_resource por config.py/lru_cache.
 import io
 import uuid
 from functools import lru_cache
+from pathlib import Path
 
 import boto3
 from botocore.client import Config
@@ -41,6 +42,25 @@ def subir_archivo(contenido: bytes, nombre_original: str) -> str:
 
     cliente = _cliente_r2()
     cliente.upload_fileobj(io.BytesIO(contenido), settings.R2_BUCKET_NAME, key)
+    return key
+
+
+def subir_archivo_desde_ruta(ruta: Path, nombre_original: str) -> str:
+    """
+    Como subir_archivo, pero leyendo directo desde disco (`upload_fileobj`
+    sube en chunks desde el handle del archivo) en vez de cargar el audio
+    entero como bytes de Python primero — para sesiones largas (~200MB)
+    esa carga completa en memoria era justo lo que podía hacer caer el
+    proceso en el plan gratuito de Render (ver nota en app/audio.py).
+    Usar esta versión siempre que el MP3 ya esté en disco, como en
+    /tracks/confirm.
+    """
+    extension = nombre_original.rsplit(".", 1)[-1].lower() if "." in nombre_original else "mp3"
+    key = f"tracks/{uuid.uuid4()}.{extension}"
+
+    cliente = _cliente_r2()
+    with open(ruta, "rb") as f:
+        cliente.upload_fileobj(f, settings.R2_BUCKET_NAME, key)
     return key
 
 

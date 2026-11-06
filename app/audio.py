@@ -12,16 +12,24 @@ Requiere en el sistema:
                        → fingerprint de audio para detectar duplicados
 Si falta alguna, la función correspondiente degrada con gracia
 (devuelve None o el archivo sin convertir) en vez de romper el flujo.
+
+IMPORTANTE sobre memoria: todas las funciones de acá trabajan a partir de
+una RUTA en disco (Path), no de los bytes del audio en memoria. Con
+sesiones largas (~1 hora, ~200MB) cargar el archivo completo como bytes
+de Python — más la copia transcodificada, más lo que usa cada subproceso
+(ffmpeg/fpcalc) — podía superar fácil los 512MB de RAM del plan gratuito
+de Render y tirar abajo el proceso a mitad de análisis (eso se veía como
+"No se pudo conectar con el servidor" en el navegador, sin ningún error
+claro de por medio). Pasando rutas en vez de bytes, el archivo vive en
+disco todo el tiempo y cada herramienta externa lo lee directo — la
+memoria de Python ya no crece con el tamaño del archivo.
 """
 
-import contextlib
 import io
 import json
 import logging
-import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 logger = logging.getLogger("clubpack.audio")
@@ -31,89 +39,61 @@ def _hay_herramienta(nombre: str) -> bool:
     return shutil.which(nombre) is not None
 
 
-@contextlib.contextmanager
-def _archivo_temporal(contenido: bytes, sufijo: str = ".mp3"):
+def transcodificar_a_mp3_320(ruta_entrada: Path, ruta_salida: Path) -> tuple[Path, str | None]:
     """
-    Escribe `contenido` a un archivo temporal y da su ruta ya CERRADA.
+    Convierte cualquier audio soportado por ffmpeg a MP3 CBR 320kbps,
+    leyendo desde `ruta_entrada` y escribiendo en `ruta_salida` (ambas
+    ya en disco — nunca se cargan los bytes del audio en memoria de
+    Python). Devuelve (ruta_resultante, advertencia_o_None).
 
-    En Windows, un proceso externo (ffmpeg/ffprobe/fpcalc) no puede abrir
-    por nombre un archivo que este proceso todavía tiene abierto — a
-    diferencia de Linux/Mac, donde sí se puede sin problema. Por eso acá
-    se escribe con `delete=False`, se cierra el handle, y recién ahí se
-    da la ruta; se borra solo al salir del `with`.
-    """
-    f = tempfile.NamedTemporaryFile(suffix=sufijo, delete=False)
-    try:
-        f.write(contenido)
-        f.close()
-        yield f.name
-    finally:
-        try:
-            os.unlink(f.name)
-        except OSError:
-            pass
-
-
-def transcodificar_a_mp3_320(contenido: bytes, nombre_original: str) -> tuple[bytes, str | None]:
-    """
-    Convierte cualquier audio soportado por ffmpeg a MP3 CBR 320kbps.
-    Devuelve (bytes_resultantes, advertencia_o_None).
-    Si ffmpeg no está disponible, devuelve el contenido sin tocar y una
-    advertencia (para no romper el flujo en un entorno sin ffmpeg).
+    Si ffmpeg no está disponible, deja `ruta_entrada` tal cual (sin
+    convertir) y avisa — para no romper el flujo en un entorno sin ffmpeg.
     """
     if not _hay_herramienta("ffmpeg"):
         aviso = "ffmpeg no está instalado en este servidor — se subió el archivo sin convertir a MP3 320."
         logger.warning(aviso)
-        return contenido, aviso
+        return ruta_entrada, aviso
 
-    extension = nombre_original.rsplit(".", 1)[-1].lower() if "." in nombre_original else "bin"
-
-    with tempfile.TemporaryDirectory() as tmp:
-        entrada = Path(tmp) / f"original.{extension}"
-        salida = Path(tmp) / "salida.mp3"
-        entrada.write_bytes(contenido)
-
-        resultado = subprocess.run(
-            [
-                "ffmpeg", "-y", "-i", str(entrada),
-                "-codec:a", "libmp3lame", "-b:a", "320k",
-                # "-codec:v copy" conserva la carátula embebida (si el
-                # archivo original trae una) como "attached_pic" en el
-                # MP3 de salida, para poder extraerla después con
-                # extraer_caratula(). Si no hay stream de video, ffmpeg
-                # simplemente ignora el flag — no rompe nada.
-                "-codec:v", "copy", "-id3v2_version", "3",
-                str(salida),
-            ],
-            capture_output=True,
+    resultado = subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", str(ruta_entrada),
+            "-codec:a", "libmp3lame", "-b:a", "320k",
+            # "-codec:v copy" conserva la carátula embebida (si el
+            # archivo original trae una) como "attached_pic" en el
+            # MP3 de salida, para poder extraerla después con
+            # extraer_caratula(). Si no hay stream de video, ffmpeg
+            # simplemente ignora el flag — no rompe nada.
+            "-codec:v", "copy", "-id3v2_version", "3",
+            str(ruta_salida),
+        ],
+        capture_output=True,
+    )
+    if resultado.returncode != 0 or not ruta_salida.exists():
+        raise RuntimeError(
+            f"No se pudo convertir el audio a MP3 320kbps: {resultado.stderr.decode(errors='ignore')[-500:]}"
         )
-        if resultado.returncode != 0 or not salida.exists():
-            raise RuntimeError(
-                f"No se pudo convertir el audio a MP3 320kbps: {resultado.stderr.decode(errors='ignore')[-500:]}"
-            )
-        return salida.read_bytes(), None
+    return ruta_salida, None
 
 
-def obtener_duracion_seg(contenido_mp3: bytes) -> int | None:
+def obtener_duracion_seg(ruta_mp3: Path) -> int | None:
     """Duración en segundos usando ffprobe. None si no se puede calcular."""
     if not _hay_herramienta("ffprobe"):
         return None
 
-    with _archivo_temporal(contenido_mp3) as ruta:
-        resultado = subprocess.run(
-            [
-                "ffprobe", "-v", "quiet", "-print_format", "json",
-                "-show_format", ruta,
-            ],
-            capture_output=True,
-        )
-        if resultado.returncode != 0:
-            return None
-        try:
-            data = json.loads(resultado.stdout)
-            return round(float(data["format"]["duration"]))
-        except (KeyError, ValueError, json.JSONDecodeError):
-            return None
+    resultado = subprocess.run(
+        [
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_format", str(ruta_mp3),
+        ],
+        capture_output=True,
+    )
+    if resultado.returncode != 0:
+        return None
+    try:
+        data = json.loads(resultado.stdout)
+        return round(float(data["format"]["duration"]))
+    except (KeyError, ValueError, json.JSONDecodeError):
+        return None
 
 
 BPM_SEGMENTO_SEG = 25  # cuánto audio se analiza en cada uno de los 3 puntos
@@ -121,7 +101,7 @@ BPM_TOLERANCIA = 3.0  # diferencia máxima entre dos lecturas para contarlas com
 BPM_DURACION_MINIMA_PARA_3_PUNTOS = 15  # por debajo de esto, un solo punto alcanza
 
 
-def _extraer_segmento_wav(ruta_mp3: str, offset_seg: float, duracion_seg: float) -> bytes | None:
+def _extraer_segmento_wav(ruta_mp3: Path, offset_seg: float, duracion_seg: float) -> bytes | None:
     """
     Extrae un segmento de audio y lo devuelve ya decodificado como WAV
     (PCM), usando ffmpeg directo en vez de dejar que librosa/soundfile
@@ -134,7 +114,7 @@ def _extraer_segmento_wav(ruta_mp3: str, offset_seg: float, duracion_seg: float)
         [
             "ffmpeg", "-y",
             "-ss", str(max(offset_seg, 0.0)), "-t", str(duracion_seg),
-            "-i", ruta_mp3,
+            "-i", str(ruta_mp3),
             "-ar", "22050", "-ac", "1", "-f", "wav", "pipe:1",
         ],
         capture_output=True,
@@ -148,7 +128,7 @@ def _extraer_segmento_wav(ruta_mp3: str, offset_seg: float, duracion_seg: float)
     return resultado.stdout
 
 
-def _tempo_en(ruta: str, offset_seg: float) -> float | None:
+def _tempo_en(ruta: Path, offset_seg: float) -> float | None:
     """Una sola lectura de tempo, arrancando en offset_seg."""
     import librosa
 
@@ -167,7 +147,7 @@ def _tempo_en(ruta: str, offset_seg: float) -> float | None:
         return None
 
 
-def detectar_bpm(contenido_mp3: bytes, duracion_seg: int | None = None) -> float | None:
+def detectar_bpm(ruta_mp3: Path, duracion_seg: int | None = None) -> float | None:
     """
     Estima el BPM tomando 3 lecturas — a los 25%, 50% y 75% de la duración
     del tema — y se queda con la que se repite entre las tres. Una sola
@@ -189,21 +169,20 @@ def detectar_bpm(contenido_mp3: bytes, duracion_seg: int | None = None) -> float
     if not _hay_herramienta("ffmpeg"):
         return None
 
-    with _archivo_temporal(contenido_mp3) as ruta:
-        total = duracion_seg if duracion_seg is not None else obtener_duracion_seg(contenido_mp3)
-        if not total or total < BPM_DURACION_MINIMA_PARA_3_PUNTOS:
-            puntos = [0.0]
-        else:
-            puntos = [total * 0.25, total * 0.50, total * 0.75]
+    total = duracion_seg if duracion_seg is not None else obtener_duracion_seg(ruta_mp3)
+    if not total or total < BPM_DURACION_MINIMA_PARA_3_PUNTOS:
+        puntos = [0.0]
+    else:
+        puntos = [total * 0.25, total * 0.50, total * 0.75]
 
-        lecturas = [b for b in (_tempo_en(ruta, p) for p in puntos) if b is not None]
+    lecturas = [b for b in (_tempo_en(ruta_mp3, p) for p in puntos) if b is not None]
 
-        if not lecturas:
-            return None
-        if len(lecturas) == 1:
-            return lecturas[0]
+    if not lecturas:
+        return None
+    if len(lecturas) == 1:
+        return lecturas[0]
 
-        return _mejor_lectura(lecturas)
+    return _mejor_lectura(lecturas)
 
 
 def _mejor_lectura(lecturas: list[float]) -> float:
@@ -245,7 +224,7 @@ _CAMELOT_MENOR = {
 }
 
 
-def detectar_key(contenido_mp3: bytes, duracion_seg: int | None = None) -> str | None:
+def detectar_key(ruta_mp3: Path, duracion_seg: int | None = None) -> str | None:
     """
     Estima la tonalidad en notación Camelot (p.ej. "8A", "5B") con el
     método de Krumhansl-Schmuckler: promedia la energía de cada nota
@@ -273,24 +252,23 @@ def detectar_key(contenido_mp3: bytes, duracion_seg: int | None = None) -> str |
     if not _hay_herramienta("ffmpeg"):
         return None
 
-    with _archivo_temporal(contenido_mp3) as ruta:
-        total = duracion_seg if duracion_seg is not None else obtener_duracion_seg(contenido_mp3)
-        duracion_analisis = min(KEY_SEGMENTO_SEG, total) if total else KEY_SEGMENTO_SEG
-        offset = max(0.0, (total - duracion_analisis) / 2) if total else 0.0
+    total = duracion_seg if duracion_seg is not None else obtener_duracion_seg(ruta_mp3)
+    duracion_analisis = min(KEY_SEGMENTO_SEG, total) if total else KEY_SEGMENTO_SEG
+    offset = max(0.0, (total - duracion_analisis) / 2) if total else 0.0
 
-        wav_bytes = _extraer_segmento_wav(ruta, offset, duracion_analisis)
-        if not wav_bytes:
-            return None
+    wav_bytes = _extraer_segmento_wav(ruta_mp3, offset, duracion_analisis)
+    if not wav_bytes:
+        return None
 
-        try:
-            y, sr = librosa.load(io.BytesIO(wav_bytes), sr=22050, mono=True)
-            if y.size == 0:
-                return None
-            chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
-            perfil_detectado = chroma.mean(axis=1)
-        except Exception:
-            logger.exception("Falló la detección de tonalidad")
+    try:
+        y, sr = librosa.load(io.BytesIO(wav_bytes), sr=22050, mono=True)
+        if y.size == 0:
             return None
+        chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
+        perfil_detectado = chroma.mean(axis=1)
+    except Exception:
+        logger.exception("Falló la detección de tonalidad")
+        return None
 
     perfil_mayor = np.array(_PERFIL_MAYOR)
     perfil_menor = np.array(_PERFIL_MENOR)
@@ -310,7 +288,7 @@ def detectar_key(contenido_mp3: bytes, duracion_seg: int | None = None) -> str |
     return mejor_camelot
 
 
-def calcular_fingerprint(contenido_mp3: bytes) -> str | None:
+def calcular_fingerprint(ruta_mp3: Path) -> str | None:
     """
     Fingerprint de Chromaprint (fpcalc) para detectar el mismo audio
     subido con otro nombre/metadata. None si fpcalc no está disponible.
@@ -318,21 +296,20 @@ def calcular_fingerprint(contenido_mp3: bytes) -> str | None:
     if not _hay_herramienta("fpcalc"):
         return None
 
-    with _archivo_temporal(contenido_mp3) as ruta:
-        resultado = subprocess.run(
-            ["fpcalc", "-json", ruta],
-            capture_output=True,
-        )
-        if resultado.returncode != 0:
-            return None
-        try:
-            data = json.loads(resultado.stdout)
-            return data.get("fingerprint")
-        except json.JSONDecodeError:
-            return None
+    resultado = subprocess.run(
+        ["fpcalc", "-json", str(ruta_mp3)],
+        capture_output=True,
+    )
+    if resultado.returncode != 0:
+        return None
+    try:
+        data = json.loads(resultado.stdout)
+        return data.get("fingerprint")
+    except json.JSONDecodeError:
+        return None
 
 
-def extraer_caratula(contenido_mp3: bytes) -> tuple[bytes, str] | None:
+def extraer_caratula(ruta_mp3: Path) -> tuple[bytes, str] | None:
     """
     Extrae la carátula embebida (tag ID3 APIC) del MP3, si el archivo
     original traía una. Devuelve (bytes_de_la_imagen, extension) o
@@ -345,27 +322,26 @@ def extraer_caratula(contenido_mp3: bytes) -> tuple[bytes, str] | None:
         logger.warning("mutagen no está instalado — no se puede extraer la carátula embebida.")
         return None
 
-    with _archivo_temporal(contenido_mp3) as ruta:
-        try:
-            tags = MP3(ruta).tags
-        except Exception:
-            return None
-        if not tags:
-            return None
-        for tag in tags.values():
-            if isinstance(tag, APIC):
-                mime = (tag.mime or "").lower()
-                extension = "png" if "png" in mime else "jpg"
-                return bytes(tag.data), extension
+    try:
+        tags = MP3(ruta_mp3).tags
+    except Exception:
+        return None
+    if not tags:
+        return None
+    for tag in tags.values():
+        if isinstance(tag, APIC):
+            mime = (tag.mime or "").lower()
+            extension = "png" if "png" in mime else "jpg"
+            return bytes(tag.data), extension
     return None
 
 
-def analizar_track(contenido_mp3: bytes) -> dict:
+def analizar_track(ruta_mp3: Path) -> dict:
     """Corre duración + BPM + tonalidad + fingerprint de una. Pensado para /tracks/analyze."""
-    duracion = obtener_duracion_seg(contenido_mp3)
+    duracion = obtener_duracion_seg(ruta_mp3)
     return {
         "duracion_seg": duracion,
-        "bpm_detectado": detectar_bpm(contenido_mp3, duracion_seg=duracion),
-        "key_detectada": detectar_key(contenido_mp3, duracion_seg=duracion),
-        "fingerprint": calcular_fingerprint(contenido_mp3),
+        "bpm_detectado": detectar_bpm(ruta_mp3, duracion_seg=duracion),
+        "key_detectada": detectar_key(ruta_mp3, duracion_seg=duracion),
+        "fingerprint": calcular_fingerprint(ruta_mp3),
     }

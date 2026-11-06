@@ -1,5 +1,8 @@
 import base64
 import logging
+import shutil
+import tempfile
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
@@ -26,6 +29,11 @@ logger = logging.getLogger("clubpack.tracks")
 # no inflar la respuesta (y la memoria del request) con una imagen pesada.
 MAX_CARATULA_PREVIEW_BYTES = 800 * 1024  # 800KB
 
+# Se escribe el upload a disco en pedazos de este tamaño — nunca se junta
+# el archivo entero (sesiones largas ≈200MB) en un solo bytes de Python.
+# Ver la nota de memoria al principio de app/audio.py.
+CHUNK_SIZE = 1024 * 1024  # 1MB
+
 
 def _registrar_descarga(usuario: UsuarioAutenticado, track_id: str):
     try:
@@ -38,7 +46,7 @@ def _registrar_descarga(usuario: UsuarioAutenticado, track_id: str):
 
 
 @router.post("/analyze", response_model=AnalisisTrackResponse)
-async def analizar_track(
+def analizar_track(
     file: UploadFile,
     titulo: str = Form(...),
     remixer: str = Form(""),
@@ -48,75 +56,107 @@ async def analizar_track(
     Paso 1 de la subida: transcodifica a MP3 320, detecta duración/BPM/
     fingerprint, chequea duplicados por texto, y deja el archivo listo
     en espera de confirmación (ver /tracks/confirm).
+
+    A propósito es un `def` normal (no `async def`): FastAPI corre los
+    endpoints sync en un thread pool solo, así el trabajo pesado de acá
+    (ffmpeg, librosa, fpcalc — todo bloqueante) no congela el event loop
+    para el resto de los DJs mientras alguien sube una sesión larga.
+
+    Y a propósito el archivo NUNCA se junta entero como bytes de Python
+    (ver nota de memoria en app/audio.py) — se escribe a disco en pedazos
+    de a `CHUNK_SIZE`, y de ahí en más todo el pipeline (transcodificar,
+    analizar, dejar en espera) trabaja sobre esa ruta en disco.
     """
-    contenido = await file.read()
-    if not contenido:
-        raise HTTPException(status_code=400, detail="El archivo llegó vacío.")
+    nombre_original = file.filename or "audio.mp3"
+    extension = nombre_original.rsplit(".", 1)[-1].lower() if "." in nombre_original else "bin"
+    max_bytes = settings.MAX_UPLOAD_MB * 1024 * 1024
 
-    tamano_mb = len(contenido) / (1024 * 1024)
-    if tamano_mb > settings.MAX_UPLOAD_MB:
-        raise HTTPException(
-            status_code=413,
-            detail=f"El archivo pesa {tamano_mb:.1f}MB, el máximo permitido es {settings.MAX_UPLOAD_MB}MB.",
-        )
-
-    advertencias: list[str] = []
+    tmp_dir = Path(tempfile.mkdtemp(prefix="clubpack_analyze_"))
     try:
-        mp3_bytes, aviso = audio.transcodificar_a_mp3_320(contenido, file.filename or "audio")
-    except RuntimeError as e:
-        raise HTTPException(status_code=422, detail=str(e))
-    # Ya no hace falta el audio crudo subido — lo soltamos ahora en vez de
-    # esperar al final de la función, para no tener la copia cruda Y la
-    # transcodificada en memoria al mismo tiempo más de lo necesario.
-    del contenido
-    if aviso:
-        advertencias.append(aviso)
+        ruta_subida = tmp_dir / f"original.{extension}"
+        total = 0
+        with open(ruta_subida, "wb") as destino:
+            while True:
+                pedazo = file.file.read(CHUNK_SIZE)
+                if not pedazo:
+                    break
+                total += len(pedazo)
+                if total > max_bytes:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"El archivo supera el máximo permitido de {settings.MAX_UPLOAD_MB}MB.",
+                    )
+                destino.write(pedazo)
 
-    analisis = audio.analizar_track(mp3_bytes)
+        if total == 0:
+            raise HTTPException(status_code=400, detail="El archivo llegó vacío.")
 
-    # Fingerprint primero (es el mismo audio posta, no solo texto parecido)
-    # y de ahí se completa con los parecidos por texto, sin repetir ids.
-    dup_fingerprint = duplicados.chequear_fingerprint_exacto(usuario.client, analisis["fingerprint"])
-    dup_texto = duplicados.chequear_antes_de_subir(usuario.client, titulo, remixer)
-    vistos = {d["id"] for d in dup_fingerprint}
-    duplicados_sospechosos = dup_fingerprint + [d for d in dup_texto if d["id"] not in vistos]
+        advertencias: list[str] = []
+        try:
+            ruta_mp3, aviso = audio.transcodificar_a_mp3_320(ruta_subida, tmp_dir / "convertido.mp3")
+        except RuntimeError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        if aviso:
+            advertencias.append(aviso)
+        # Ya no hace falta el archivo crudo subido una vez transcodificado
+        # (si ffmpeg no estaba disponible, ruta_mp3 ES ruta_subida — no
+        # hay nada que borrar en ese caso).
+        if ruta_mp3 != ruta_subida:
+            ruta_subida.unlink(missing_ok=True)
 
-    staging_id = staging.guardar(mp3_bytes, file.filename or "audio.mp3", usuario.user_id)
+        analisis = audio.analizar_track(ruta_mp3)
 
-    # Solo lee tags ID3, no vuelve a transcodificar. Si el archivo trae
-    # carátula embebida, se manda como preview en base64 — sin poder verla,
-    # es muy difícil decidir si conviene mantenerla o usar la de ClubPack
-    # (el usuario tendría que ir a buscarla por otro lado y volver).
-    tiene_caratula = False
-    caratula_preview: str | None = None
-    try:
-        caratula = audio.extraer_caratula(mp3_bytes)
-        if caratula:
-            imagen_bytes, extension = caratula
-            tiene_caratula = True
-            # La elección de mantenerla o no se ofrece igual aunque sea
-            # pesada — lo único que se omite es la miniatura en sí (en
-            # base64 pesa ~33% más que el original).
-            if len(imagen_bytes) <= MAX_CARATULA_PREVIEW_BYTES:
-                mime = "image/png" if extension == "png" else "image/jpeg"
-                caratula_preview = f"data:{mime};base64,{base64.b64encode(imagen_bytes).decode('ascii')}"
-    except Exception:
+        # Fingerprint primero (es el mismo audio posta, no solo texto parecido)
+        # y de ahí se completa con los parecidos por texto, sin repetir ids.
+        dup_fingerprint = duplicados.chequear_fingerprint_exacto(usuario.client, analisis["fingerprint"])
+        dup_texto = duplicados.chequear_antes_de_subir(usuario.client, titulo, remixer)
+        vistos = {d["id"] for d in dup_fingerprint}
+        duplicados_sospechosos = dup_fingerprint + [d for d in dup_texto if d["id"] not in vistos]
+
+        # Solo lee tags ID3, no vuelve a transcodificar. Si el archivo trae
+        # carátula embebida, se manda como preview en base64 — sin poder
+        # verla, es muy difícil decidir si conviene mantenerla o usar la de
+        # ClubPack (el usuario tendría que ir a buscarla por otro lado y
+        # volver). Esto va ANTES de staging.guardar porque ese paso MUEVE
+        # el archivo de acá — después de eso ya no está en esta ruta.
         tiene_caratula = False
-        caratula_preview = None
+        caratula_preview: str | None = None
+        try:
+            caratula = audio.extraer_caratula(ruta_mp3)
+            if caratula:
+                imagen_bytes, extension_caratula = caratula
+                tiene_caratula = True
+                # La elección de mantenerla o no se ofrece igual aunque sea
+                # pesada — lo único que se omite es la miniatura en sí (en
+                # base64 pesa ~33% más que el original).
+                if len(imagen_bytes) <= MAX_CARATULA_PREVIEW_BYTES:
+                    mime = "image/png" if extension_caratula == "png" else "image/jpeg"
+                    caratula_preview = f"data:{mime};base64,{base64.b64encode(imagen_bytes).decode('ascii')}"
+        except Exception:
+            tiene_caratula = False
+            caratula_preview = None
 
-    return AnalisisTrackResponse(
-        staging_id=staging_id,
-        nombre_original=file.filename or "audio.mp3",
-        tamano_mb=round(len(mp3_bytes) / (1024 * 1024), 2),
-        duracion_seg=analisis["duracion_seg"],
-        bpm_detectado=analisis["bpm_detectado"],
-        key_detectada=analisis["key_detectada"],
-        fingerprint=analisis["fingerprint"],
-        advertencias=advertencias,
-        duplicados_sospechosos=[DuplicadoCandidato(**d) for d in duplicados_sospechosos],
-        tiene_caratula_original=tiene_caratula,
-        caratula_original_preview=caratula_preview,
-    )
+        tamano_mb = round(ruta_mp3.stat().st_size / (1024 * 1024), 2)
+        staging_id = staging.guardar(ruta_mp3, nombre_original, usuario.user_id)
+
+        return AnalisisTrackResponse(
+            staging_id=staging_id,
+            nombre_original=nombre_original,
+            tamano_mb=tamano_mb,
+            duracion_seg=analisis["duracion_seg"],
+            bpm_detectado=analisis["bpm_detectado"],
+            key_detectada=analisis["key_detectada"],
+            fingerprint=analisis["fingerprint"],
+            advertencias=advertencias,
+            duplicados_sospechosos=[DuplicadoCandidato(**d) for d in duplicados_sospechosos],
+            tiene_caratula_original=tiene_caratula,
+            caratula_original_preview=caratula_preview,
+        )
+    finally:
+        # Lo que haya quedado acá (el original si se descartó con error,
+        # restos si algo falló a mitad de camino) — el convertido ya se
+        # movió afuera por staging.guardar en el camino feliz.
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @router.post("/confirm", response_model=TrackOut)
@@ -132,81 +172,81 @@ def confirmar_subida(
             detail="No se encontró el análisis — puede haber vencido (30 min). Volvé a subir el archivo.",
         )
 
-    # Se lee una sola vez a memoria (en vez de la propiedad `contenido_mp3`,
-    # que relee el archivo de disco cada vez) y se borra el archivo
-    # temporal apenas se termina de leer — no hace falta esperar a que
-    # venza el TTL de espera si ya se confirmó la subida.
+    # Todo lo de acá trabaja sobre entrada.ruta_mp3 (el archivo en disco),
+    # nunca sobre sus bytes completos en memoria de Python — con sesiones
+    # largas (~200MB) esa carga completa era justo lo que podía hacer caer
+    # el proceso en el plan gratuito de Render (ver nota en app/audio.py).
+    # El archivo temporal recién se borra al final, en el finally, una vez
+    # que ya no hace falta para nada más (ni siquiera para la carátula).
     try:
-        contenido_mp3 = entrada.contenido_mp3
+        storage_path = storage.subir_archivo_desde_ruta(entrada.ruta_mp3, entrada.nombre_original)
+
+        fingerprint = audio.calcular_fingerprint(entrada.ruta_mp3)
+        duracion_seg = audio.obtener_duracion_seg(entrada.ruta_mp3)
+        bpm_final = (
+            body.bpm
+            if body.bpm is not None
+            else audio.detectar_bpm(entrada.ruta_mp3, duracion_seg=duracion_seg)
+        )
+        key_final = (
+            body.key_armonica
+            if body.key_armonica is not None
+            else audio.detectar_key(entrada.ruta_mp3, duracion_seg=duracion_seg)
+        )
+
+        fila = {
+            "titulo": body.titulo,
+            "artista_original": body.artista_original,
+            "remixer": body.remixer,
+            "genero_id": body.genero_id,
+            "bpm": bpm_final,
+            "key_armonica": key_final,
+            "tags": body.tags,
+            "storage_path": storage_path,
+            "duracion_seg": duracion_seg,
+            "tamano_mb": round(entrada.ruta_mp3.stat().st_size / (1024 * 1024), 2),
+            "subido_por": usuario.user_id,
+            "audio_fingerprint": fingerprint,
+        }
+
+        try:
+            resp = usuario.client.table("tracks").insert(fila).execute()
+        except Exception as e:
+            # Si falla el insert, no dejamos el archivo huérfano en R2.
+            storage.borrar_archivo(storage_path)
+            raise HTTPException(status_code=400, detail=f"No se pudo crear el track: {e}")
+
+        if not resp.data:
+            storage.borrar_archivo(storage_path)
+            raise HTTPException(status_code=400, detail="No se pudo crear el track.")
+
+        track_creado = resp.data[0]
+
+        # Si el archivo original traía una carátula embebida Y el usuario
+        # eligió mantenerla (ver tiene_caratula_original/usar_caratula_original
+        # en schemas.py), se guarda sola como portada. Si no, queda sin
+        # portada propia y el catálogo muestra la genérica de ClubPack — a
+        # veces la carátula embebida es de otro servicio pago y no queda bien,
+        # por eso esto es una elección y no algo automático. Si algo falla acá
+        # no se cae la subida: el track ya quedó creado, la portada se puede
+        # agregar después a mano.
+        if body.usar_caratula_original:
+            try:
+                caratula = audio.extraer_caratula(entrada.ruta_mp3)
+                if caratula:
+                    imagen_bytes, extension = caratula
+                    key_portada = f"portadas/{track_creado['id']}.{extension}"
+                    storage.subir_bytes(imagen_bytes, key_portada)
+                    usuario.client.table("tracks").update({"portada_url": key_portada}).eq(
+                        "id", track_creado["id"]
+                    ).execute()
+                    track_creado["portada_url"] = key_portada
+            except Exception:
+                logger.exception("No se pudo extraer/guardar la carátula embebida del track %s", track_creado["id"])
+
+        return TrackOut(**track_creado)
     finally:
         staging.borrar(entrada)
-
-    storage_path = storage.subir_archivo(contenido_mp3, entrada.nombre_original)
-
-    fingerprint = audio.calcular_fingerprint(contenido_mp3)
-    duracion_seg = audio.obtener_duracion_seg(contenido_mp3)
-    bpm_final = (
-        body.bpm
-        if body.bpm is not None
-        else audio.detectar_bpm(contenido_mp3, duracion_seg=duracion_seg)
-    )
-    key_final = (
-        body.key_armonica
-        if body.key_armonica is not None
-        else audio.detectar_key(contenido_mp3, duracion_seg=duracion_seg)
-    )
-
-    fila = {
-        "titulo": body.titulo,
-        "artista_original": body.artista_original,
-        "remixer": body.remixer,
-        "genero_id": body.genero_id,
-        "bpm": bpm_final,
-        "key_armonica": key_final,
-        "tags": body.tags,
-        "storage_path": storage_path,
-        "duracion_seg": duracion_seg,
-        "tamano_mb": round(len(contenido_mp3) / (1024 * 1024), 2),
-        "subido_por": usuario.user_id,
-        "audio_fingerprint": fingerprint,
-    }
-
-    try:
-        resp = usuario.client.table("tracks").insert(fila).execute()
-    except Exception as e:
-        # Si falla el insert, no dejamos el archivo huérfano en R2.
-        storage.borrar_archivo(storage_path)
-        raise HTTPException(status_code=400, detail=f"No se pudo crear el track: {e}")
-
-    if not resp.data:
-        storage.borrar_archivo(storage_path)
-        raise HTTPException(status_code=400, detail="No se pudo crear el track.")
-
-    track_creado = resp.data[0]
-
-    # Si el archivo original traía una carátula embebida Y el usuario
-    # eligió mantenerla (ver tiene_caratula_original/usar_caratula_original
-    # en schemas.py), se guarda sola como portada. Si no, queda sin
-    # portada propia y el catálogo muestra la genérica de ClubPack — a
-    # veces la carátula embebida es de otro servicio pago y no queda bien,
-    # por eso esto es una elección y no algo automático. Si algo falla acá
-    # no se cae la subida: el track ya quedó creado, la portada se puede
-    # agregar después a mano.
-    if body.usar_caratula_original:
-        try:
-            caratula = audio.extraer_caratula(contenido_mp3)
-            if caratula:
-                imagen_bytes, extension = caratula
-                key_portada = f"portadas/{track_creado['id']}.{extension}"
-                storage.subir_bytes(imagen_bytes, key_portada)
-                usuario.client.table("tracks").update({"portada_url": key_portada}).eq(
-                    "id", track_creado["id"]
-                ).execute()
-                track_creado["portada_url"] = key_portada
-        except Exception:
-            logger.exception("No se pudo extraer/guardar la carátula embebida del track %s", track_creado["id"])
-
-    return TrackOut(**track_creado)
 
 
 @router.get("/{track_id}/download-url", response_model=DescargaUrlResponse)

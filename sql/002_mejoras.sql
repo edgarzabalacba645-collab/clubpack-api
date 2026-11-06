@@ -52,7 +52,11 @@ alter table public.tracks
     add column if not exists estado text not null default 'activo'
         check (estado in ('activo', 'duplicado_sospechoso', 'eliminado'));
 
-create index if not exists idx_tracks_fingerprint on public.tracks (audio_fingerprint);
+-- Índice funcional sobre el hash MD5 del fingerprint: un fingerprint de
+-- Chromaprint puede ser más largo de lo que admite un índice btree
+-- estándar (pasa con temas largos), así que se indexa su hash en vez
+-- del valor crudo — sigue sirviendo para detectar duplicados exactos.
+create index if not exists idx_tracks_fingerprint_md5 on public.tracks (md5(audio_fingerprint));
 create index if not exists idx_tracks_estado on public.tracks (estado);
 
 comment on column public.tracks.audio_fingerprint is 'Fingerprint de Chromaprint (fpcalc) del audio, para detectar el mismo audio subido con otro nombre';

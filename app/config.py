@@ -61,5 +61,19 @@ class Settings:
     # Adónde vuelve el usuario en el frontend después de autorizar el pago.
     FRONTEND_URL = _env("FRONTEND_URL", "http://localhost:5173")
 
+    # --- Telegram: alerta instantánea de nuevo registro ---
+    # Opcionales: si faltan, el endpoint de webhook responde ok pero no
+    # manda nada (no rompe el registro de nadie por esto).
+    TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN")  # el que da @BotFather
+    TELEGRAM_CHAT_ID = _env("TELEGRAM_CHAT_ID")  # el que da @userinfobot
+
+    # Secreto compartido solo con el Database Webhook de Supabase que
+    # dispara /webhooks/nuevo-registro en cada alta de perfil — generado
+    # con `openssl rand -hex 32`, no es ninguna clave de Supabase.
+    REGISTRO_WEBHOOK_SECRET = _env("REGISTRO_WEBHOOK_SECRET")
+
+    # Tamaño máximo de imagen aceptada (portadas de track, herramientas DJ).
+    MAX_IMAGEN_MB = int(_env("MAX_IMAGEN_MB", "8"))
+
 
 settings = Settings()

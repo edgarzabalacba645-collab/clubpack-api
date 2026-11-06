@@ -77,6 +77,12 @@ def transcodificar_a_mp3_320(contenido: bytes, nombre_original: str) -> tuple[by
             [
                 "ffmpeg", "-y", "-i", str(entrada),
                 "-codec:a", "libmp3lame", "-b:a", "320k",
+                # "-codec:v copy" conserva la carátula embebida (si el
+                # archivo original trae una) como "attached_pic" en el
+                # MP3 de salida, para poder extraerla después con
+                # extraer_caratula(). Si no hay stream de video, ffmpeg
+                # simplemente ignora el flag — no rompe nada.
+                "-codec:v", "copy", "-id3v2_version", "3",
                 str(salida),
             ],
             capture_output=True,
@@ -324,6 +330,34 @@ def calcular_fingerprint(contenido_mp3: bytes) -> str | None:
             return data.get("fingerprint")
         except json.JSONDecodeError:
             return None
+
+
+def extraer_caratula(contenido_mp3: bytes) -> tuple[bytes, str] | None:
+    """
+    Extrae la carátula embebida (tag ID3 APIC) del MP3, si el archivo
+    original traía una. Devuelve (bytes_de_la_imagen, extension) o
+    None si no hay carátula, o si falta la librería mutagen.
+    """
+    try:
+        from mutagen.id3 import APIC
+        from mutagen.mp3 import MP3
+    except ImportError:
+        logger.warning("mutagen no está instalado — no se puede extraer la carátula embebida.")
+        return None
+
+    with _archivo_temporal(contenido_mp3) as ruta:
+        try:
+            tags = MP3(ruta).tags
+        except Exception:
+            return None
+        if not tags:
+            return None
+        for tag in tags.values():
+            if isinstance(tag, APIC):
+                mime = (tag.mime or "").lower()
+                extension = "png" if "png" in mime else "jpg"
+                return bytes(tag.data), extension
+    return None
 
 
 def analizar_track(contenido_mp3: bytes) -> dict:

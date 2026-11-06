@@ -44,6 +44,18 @@ def subir_archivo(contenido: bytes, nombre_original: str) -> str:
     return key
 
 
+def subir_bytes(contenido: bytes, key: str) -> str:
+    """
+    Como subir_archivo, pero con la key exacta que se le pida (en vez
+    de generar un nombre random) — lo usan las portadas de tracks y
+    las imágenes de herramientas DJ, que quieren una key predecible
+    (p.ej. "portadas/{track_id}.jpg") para poder reemplazarla después.
+    """
+    cliente = _cliente_r2()
+    cliente.upload_fileobj(io.BytesIO(contenido), settings.R2_BUCKET_NAME, key)
+    return key
+
+
 def generar_url_descarga(storage_path: str, nombre_descarga: str | None = None, expira_seg: int = 300) -> str:
     """
     Genera una URL firmada y temporal (default 5 min) para bajar o

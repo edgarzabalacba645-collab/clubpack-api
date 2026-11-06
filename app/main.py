@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .routers import duplicados, playlists, suscripcion, tracks
+from .routers import duplicados, imagenes, playlists, suscripcion, tracks, webhooks
 
 logging.basicConfig(level=logging.INFO)
 
@@ -31,6 +31,8 @@ app.include_router(tracks.router)
 app.include_router(duplicados.router)
 app.include_router(playlists.router)
 app.include_router(suscripcion.router)
+app.include_router(imagenes.router)
+app.include_router(webhooks.router)
 
 
 @app.get("/health")

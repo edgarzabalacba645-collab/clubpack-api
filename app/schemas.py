@@ -49,6 +49,7 @@ class TrackOut(BaseModel):
     subido_por: str | None = None
     fecha_subida: str
     estado: str
+    portada_url: str | None = None
 
 
 class DescargaUrlResponse(BaseModel):
@@ -69,6 +70,14 @@ class EscaneoResponse(BaseModel):
 
 class MarcarDuplicadoRequest(BaseModel):
     estado: Literal["descartado", "resuelto"]
+
+
+class ImagenUrlResponse(BaseModel):
+    url: str
+
+
+class ImagenSubidaResponse(BaseModel):
+    path: str
 
 
 class CrearSuscripcionMPResponse(BaseModel):

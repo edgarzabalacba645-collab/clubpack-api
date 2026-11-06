@@ -14,6 +14,8 @@ como el usuario que llama a la API en cada request), en vez de un
 `get_client()` global atado a st.session_state.
 """
 
+import hashlib
+
 from supabase import Client
 from rapidfuzz import fuzz, process
 
@@ -57,6 +59,35 @@ def chequear_antes_de_subir(client: Client, titulo: str, remixer: str, limite: i
         if score >= UMBRAL_TEXTO_SOSPECHOSO:
             salida.append({**por_id[track_id], "similitud": round(score, 1)})
     return salida
+
+
+def chequear_fingerprint_exacto(client: Client, fingerprint: str | None) -> list[dict]:
+    """
+    Busca tracks activos con el MISMO fingerprint de audio exacto —
+    sería el mismo archivo subido con otro nombre/metadata. A
+    diferencia de chequear_antes_de_subir (que solo compara texto),
+    esto se agrega en /tracks/analyze para que un duplicado real salte
+    ANTES de confirmar la subida, y no solo cuando el admin corre el
+    escaneo completo del catálogo (escanear_catalogo_completo, más
+    abajo) a mano.
+
+    Filtra por el MD5 del fingerprint (columna audio_fingerprint_md5,
+    ver sql/005_features.sql) y no por el fingerprint crudo: este
+    último puede ser kilobytes de texto en un tema largo, y PostgREST
+    manda los filtros por query string — un fingerprint así de largo
+    arriesga una URL gigante. El MD5 siempre son 32 caracteres.
+    """
+    if not fingerprint:
+        return []
+    fingerprint_md5 = hashlib.md5(fingerprint.encode("utf-8")).hexdigest()
+    resp = (
+        client.table("tracks")
+        .select("id, titulo, remixer")
+        .eq("estado", "activo")
+        .eq("audio_fingerprint_md5", fingerprint_md5)
+        .execute()
+    )
+    return [{**t, "similitud": 100.0} for t in (resp.data or [])]
 
 
 def escanear_catalogo_completo(client: Client) -> dict:

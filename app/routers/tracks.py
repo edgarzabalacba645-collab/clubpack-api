@@ -61,7 +61,13 @@ async def analizar_track(
         advertencias.append(aviso)
 
     analisis = audio.analizar_track(mp3_bytes)
-    duplicados_sospechosos = duplicados.chequear_antes_de_subir(usuario.client, titulo, remixer)
+
+    # Fingerprint primero (es el mismo audio posta, no solo texto parecido)
+    # y de ahí se completa con los parecidos por texto, sin repetir ids.
+    dup_fingerprint = duplicados.chequear_fingerprint_exacto(usuario.client, analisis["fingerprint"])
+    dup_texto = duplicados.chequear_antes_de_subir(usuario.client, titulo, remixer)
+    vistos = {d["id"] for d in dup_fingerprint}
+    duplicados_sospechosos = dup_fingerprint + [d for d in dup_texto if d["id"] not in vistos]
 
     staging_id = staging.guardar(mp3_bytes, file.filename or "audio.mp3", usuario.user_id)
 
@@ -132,7 +138,26 @@ def confirmar_subida(
         storage.borrar_archivo(storage_path)
         raise HTTPException(status_code=400, detail="No se pudo crear el track.")
 
-    return TrackOut(**resp.data[0])
+    track_creado = resp.data[0]
+
+    # Si el archivo original traía una carátula embebida, se guarda sola
+    # como portada — sin esto, el catálogo muestra la genérica de
+    # ClubPack. Si algo falla acá no se cae la subida: el track ya quedó
+    # creado, la portada se puede agregar después a mano.
+    try:
+        caratula = audio.extraer_caratula(entrada.contenido_mp3)
+        if caratula:
+            imagen_bytes, extension = caratula
+            key_portada = f"portadas/{track_creado['id']}.{extension}"
+            storage.subir_bytes(imagen_bytes, key_portada)
+            usuario.client.table("tracks").update({"portada_url": key_portada}).eq(
+                "id", track_creado["id"]
+            ).execute()
+            track_creado["portada_url"] = key_portada
+    except Exception:
+        logger.exception("No se pudo extraer/guardar la carátula embebida del track %s", track_creado["id"])
+
+    return TrackOut(**track_creado)
 
 
 @router.get("/{track_id}/download-url", response_model=DescargaUrlResponse)

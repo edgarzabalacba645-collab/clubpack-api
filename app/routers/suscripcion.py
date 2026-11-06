@@ -2,10 +2,10 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from .. import deps, mercadopago
+from .. import deps, mercadopago, telegram
 from ..config import settings
 from ..deps import UsuarioAutenticado, get_usuario_actual
-from ..schemas import CrearSuscripcionMPResponse
+from ..schemas import AvisoPagoManualRequest, CrearSuscripcionMPResponse
 
 router = APIRouter(prefix="/suscripcion", tags=["suscripcion"])
 logger = logging.getLogger("clubpack.suscripcion")
@@ -69,6 +69,37 @@ def crear_suscripcion_mp(usuario: UsuarioAutenticado = Depends(get_usuario_actua
         init_point=resultado["init_point"],
         sandbox_init_point=resultado.get("sandbox_init_point"),
     )
+
+
+@router.post("/aviso-manual")
+def aviso_pago_manual(
+    body: AvisoPagoManualRequest,
+    usuario: UsuarioAutenticado = Depends(get_usuario_actual),
+):
+    """
+    Lo llama el frontend justo después de insertar en `pagos` (tipo
+    "manual", vía RLS directo a Supabase — ese insert no pasa por acá).
+    Este endpoint no escribe nada: solo manda el aviso a Telegram, mismo
+    mecanismo que /webhooks/nuevo-registro, para que el admin se entere al
+    toque sin tener que mirar el panel de Admin a cada rato. Si Telegram no
+    está configurado o falla, no rompe nada — el aviso ya quedó guardado en
+    `pagos` igual, el admin lo va a ver tarde o temprano en Admin.
+    """
+    perfil_resp = (
+        usuario.client.table("perfiles").select("email, nombre_dj").eq("id", usuario.user_id).single().execute()
+    )
+    perfil = perfil_resp.data or {}
+    email = perfil.get("email") or "(sin email)"
+    nombre_dj = perfil.get("nombre_dj")
+    quien = f"{nombre_dj} ({email})" if nombre_dj and nombre_dj != email else email
+
+    texto = f"💸 <b>Aviso de transferencia en ClubPack</b>\n{quien}"
+    if body.comentario:
+        texto += f"\n\n{body.comentario}"
+    texto += "\n\nEntrá al panel de Admin, pestaña Pagos, para revisarlo y activarle la suscripción."
+
+    telegram.enviar_mensaje(texto)
+    return {"ok": True}
 
 
 @router.post("/mercadopago/webhook")

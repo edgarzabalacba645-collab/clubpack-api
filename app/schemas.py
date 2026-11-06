@@ -84,3 +84,7 @@ class CrearSuscripcionMPResponse(BaseModel):
     preapproval_id: str
     init_point: str
     sandbox_init_point: str | None = None
+
+
+class AvisoPagoManualRequest(BaseModel):
+    comentario: str | None = None

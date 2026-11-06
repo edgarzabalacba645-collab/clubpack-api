@@ -20,6 +20,11 @@ class AnalisisTrackResponse(BaseModel):
     fingerprint: str | None = None
     advertencias: list[str] = Field(default_factory=list)
     duplicados_sospechosos: list[DuplicadoCandidato] = Field(default_factory=list)
+    # True si el archivo trae carátula embebida (tag ID3 APIC) — el
+    # frontend solo necesita mostrar la elección "mantener original vs.
+    # portada de ClubPack" cuando esto es True; si no hay carátula, va
+    # derecho la de ClubPack sin preguntar nada.
+    tiene_caratula_original: bool = False
 
 
 class ConfirmarSubidaRequest(BaseModel):
@@ -31,6 +36,10 @@ class ConfirmarSubidaRequest(BaseModel):
     bpm: float | None = None
     key_armonica: str | None = None
     tags: list[str] = Field(default_factory=list)
+    # Solo importa cuando el análisis reportó tiene_caratula_original=True.
+    # Default True para no cambiar el comportamiento de ningún cliente
+    # viejo que no mande este campo.
+    usar_caratula_original: bool = True
 
 
 class TrackOut(BaseModel):

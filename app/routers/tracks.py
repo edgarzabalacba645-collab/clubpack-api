@@ -71,6 +71,13 @@ async def analizar_track(
 
     staging_id = staging.guardar(mp3_bytes, file.filename or "audio.mp3", usuario.user_id)
 
+    # Chequeo liviano (solo lee tags ID3, no vuelve a transcodificar) para
+    # saber si corresponde ofrecer la elección de portada en el frontend.
+    try:
+        tiene_caratula = audio.extraer_caratula(mp3_bytes) is not None
+    except Exception:
+        tiene_caratula = False
+
     return AnalisisTrackResponse(
         staging_id=staging_id,
         nombre_original=file.filename or "audio.mp3",
@@ -81,6 +88,7 @@ async def analizar_track(
         fingerprint=analisis["fingerprint"],
         advertencias=advertencias,
         duplicados_sospechosos=[DuplicadoCandidato(**d) for d in duplicados_sospechosos],
+        tiene_caratula_original=tiene_caratula,
     )
 
 
@@ -140,22 +148,27 @@ def confirmar_subida(
 
     track_creado = resp.data[0]
 
-    # Si el archivo original traía una carátula embebida, se guarda sola
-    # como portada — sin esto, el catálogo muestra la genérica de
-    # ClubPack. Si algo falla acá no se cae la subida: el track ya quedó
-    # creado, la portada se puede agregar después a mano.
-    try:
-        caratula = audio.extraer_caratula(entrada.contenido_mp3)
-        if caratula:
-            imagen_bytes, extension = caratula
-            key_portada = f"portadas/{track_creado['id']}.{extension}"
-            storage.subir_bytes(imagen_bytes, key_portada)
-            usuario.client.table("tracks").update({"portada_url": key_portada}).eq(
-                "id", track_creado["id"]
-            ).execute()
-            track_creado["portada_url"] = key_portada
-    except Exception:
-        logger.exception("No se pudo extraer/guardar la carátula embebida del track %s", track_creado["id"])
+    # Si el archivo original traía una carátula embebida Y el usuario
+    # eligió mantenerla (ver tiene_caratula_original/usar_caratula_original
+    # en schemas.py), se guarda sola como portada. Si no, queda sin
+    # portada propia y el catálogo muestra la genérica de ClubPack — a
+    # veces la carátula embebida es de otro servicio pago y no queda bien,
+    # por eso esto es una elección y no algo automático. Si algo falla acá
+    # no se cae la subida: el track ya quedó creado, la portada se puede
+    # agregar después a mano.
+    if body.usar_caratula_original:
+        try:
+            caratula = audio.extraer_caratula(entrada.contenido_mp3)
+            if caratula:
+                imagen_bytes, extension = caratula
+                key_portada = f"portadas/{track_creado['id']}.{extension}"
+                storage.subir_bytes(imagen_bytes, key_portada)
+                usuario.client.table("tracks").update({"portada_url": key_portada}).eq(
+                    "id", track_creado["id"]
+                ).execute()
+                track_creado["portada_url"] = key_portada
+        except Exception:
+            logger.exception("No se pudo extraer/guardar la carátula embebida del track %s", track_creado["id"])
 
     return TrackOut(**track_creado)
 

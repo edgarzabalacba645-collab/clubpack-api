@@ -19,6 +19,13 @@ from ..schemas import (
 router = APIRouter(prefix="/tracks", tags=["tracks"])
 logger = logging.getLogger("clubpack.tracks")
 
+# Tope para mandar la carátula embebida como miniatura (base64) en la
+# respuesta de /analyze. Por arriba de esto, igual se informa que el
+# archivo SÍ tiene carátula (tiene_caratula_original) para que el usuario
+# pueda elegir mantenerla o no — simplemente no se manda la miniatura, para
+# no inflar la respuesta (y la memoria del request) con una imagen pesada.
+MAX_CARATULA_PREVIEW_BYTES = 800 * 1024  # 800KB
+
 
 def _registrar_descarga(usuario: UsuarioAutenticado, track_id: str):
     try:
@@ -58,6 +65,10 @@ async def analizar_track(
         mp3_bytes, aviso = audio.transcodificar_a_mp3_320(contenido, file.filename or "audio")
     except RuntimeError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    # Ya no hace falta el audio crudo subido — lo soltamos ahora en vez de
+    # esperar al final de la función, para no tener la copia cruda Y la
+    # transcodificada en memoria al mismo tiempo más de lo necesario.
+    del contenido
     if aviso:
         advertencias.append(aviso)
 
@@ -76,14 +87,21 @@ async def analizar_track(
     # carátula embebida, se manda como preview en base64 — sin poder verla,
     # es muy difícil decidir si conviene mantenerla o usar la de ClubPack
     # (el usuario tendría que ir a buscarla por otro lado y volver).
+    tiene_caratula = False
     caratula_preview: str | None = None
     try:
         caratula = audio.extraer_caratula(mp3_bytes)
         if caratula:
             imagen_bytes, extension = caratula
-            mime = "image/png" if extension == "png" else "image/jpeg"
-            caratula_preview = f"data:{mime};base64,{base64.b64encode(imagen_bytes).decode('ascii')}"
+            tiene_caratula = True
+            # La elección de mantenerla o no se ofrece igual aunque sea
+            # pesada — lo único que se omite es la miniatura en sí (en
+            # base64 pesa ~33% más que el original).
+            if len(imagen_bytes) <= MAX_CARATULA_PREVIEW_BYTES:
+                mime = "image/png" if extension == "png" else "image/jpeg"
+                caratula_preview = f"data:{mime};base64,{base64.b64encode(imagen_bytes).decode('ascii')}"
     except Exception:
+        tiene_caratula = False
         caratula_preview = None
 
     return AnalisisTrackResponse(
@@ -96,7 +114,7 @@ async def analizar_track(
         fingerprint=analisis["fingerprint"],
         advertencias=advertencias,
         duplicados_sospechosos=[DuplicadoCandidato(**d) for d in duplicados_sospechosos],
-        tiene_caratula_original=caratula_preview is not None,
+        tiene_caratula_original=tiene_caratula,
         caratula_original_preview=caratula_preview,
     )
 
@@ -114,19 +132,28 @@ def confirmar_subida(
             detail="No se encontró el análisis — puede haber vencido (30 min). Volvé a subir el archivo.",
         )
 
-    storage_path = storage.subir_archivo(entrada.contenido_mp3, entrada.nombre_original)
+    # Se lee una sola vez a memoria (en vez de la propiedad `contenido_mp3`,
+    # que relee el archivo de disco cada vez) y se borra el archivo
+    # temporal apenas se termina de leer — no hace falta esperar a que
+    # venza el TTL de espera si ya se confirmó la subida.
+    try:
+        contenido_mp3 = entrada.contenido_mp3
+    finally:
+        staging.borrar(entrada)
 
-    fingerprint = audio.calcular_fingerprint(entrada.contenido_mp3)
-    duracion_seg = audio.obtener_duracion_seg(entrada.contenido_mp3)
+    storage_path = storage.subir_archivo(contenido_mp3, entrada.nombre_original)
+
+    fingerprint = audio.calcular_fingerprint(contenido_mp3)
+    duracion_seg = audio.obtener_duracion_seg(contenido_mp3)
     bpm_final = (
         body.bpm
         if body.bpm is not None
-        else audio.detectar_bpm(entrada.contenido_mp3, duracion_seg=duracion_seg)
+        else audio.detectar_bpm(contenido_mp3, duracion_seg=duracion_seg)
     )
     key_final = (
         body.key_armonica
         if body.key_armonica is not None
-        else audio.detectar_key(entrada.contenido_mp3, duracion_seg=duracion_seg)
+        else audio.detectar_key(contenido_mp3, duracion_seg=duracion_seg)
     )
 
     fila = {
@@ -139,7 +166,7 @@ def confirmar_subida(
         "tags": body.tags,
         "storage_path": storage_path,
         "duracion_seg": duracion_seg,
-        "tamano_mb": round(len(entrada.contenido_mp3) / (1024 * 1024), 2),
+        "tamano_mb": round(len(contenido_mp3) / (1024 * 1024), 2),
         "subido_por": usuario.user_id,
         "audio_fingerprint": fingerprint,
     }
@@ -167,7 +194,7 @@ def confirmar_subida(
     # agregar después a mano.
     if body.usar_caratula_original:
         try:
-            caratula = audio.extraer_caratula(entrada.contenido_mp3)
+            caratula = audio.extraer_caratula(contenido_mp3)
             if caratula:
                 imagen_bytes, extension = caratula
                 key_portada = f"portadas/{track_creado['id']}.{extension}"

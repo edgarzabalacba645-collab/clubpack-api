@@ -49,8 +49,6 @@ def crear_suscripcion_mp(usuario: UsuarioAutenticado = Depends(get_usuario_actua
     )
     perfil = perfil_resp.data or {}
     email = perfil.get("email")
-    if not email:
-        raise HTTPException(status_code=400, detail="Tu perfil no tiene un email asociado.")
 
     try:
         resultado = mercadopago.crear_preapproval(

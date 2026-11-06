@@ -43,7 +43,7 @@ def _headers() -> dict[str, str]:
 def crear_preapproval(
     *,
     usuario_id: str,
-    email: str,
+    email: str | None,
     monto: float,
     moneda: str = "ARS",
     razon: str = "Suscripción mensual ClubPack",
@@ -58,11 +58,20 @@ def crear_preapproval(
 
     `external_reference` queda en el id de usuario de Supabase: así el
     webhook puede saber a quién activarle la suscripción.
+
+    `email` (payer_email) es opcional a propósito: si lo mandamos, Mercado
+    Pago exige que esa cuenta exista Y que coincida en "realness" con el
+    access token usado (misma cuenta real, o ambas de prueba) — si el email
+    del perfil no coincide con ninguna cuenta de Mercado Pago (algo normal:
+    el DJ puede loguearse en ClubPack con un mail distinto al de su cuenta
+    de Mercado Pago), la creación del preapproval falla. Sin payer_email,
+    Mercado Pago simplemente deja que el usuario elija/loguee su cuenta en
+    la página de pago — más robusto para producción, y es lo que nos deja
+    probar con cuentas de prueba sin depender de que los emails coincidan.
     """
     body = {
         "reason": razon,
         "external_reference": usuario_id,
-        "payer_email": email,
         "back_url": f"{settings.FRONTEND_URL}/suscripcion?resultado=mp",
         "auto_recurring": {
             "frequency": 1,
@@ -72,6 +81,8 @@ def crear_preapproval(
         },
         "status": "pending",
     }
+    if email:
+        body["payer_email"] = email
 
     with httpx.Client(timeout=20.0) as cliente:
         resp = cliente.post(f"{API_BASE}/preapproval", headers=_headers(), json=body)

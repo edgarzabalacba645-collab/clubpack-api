@@ -167,9 +167,15 @@ def confirmar_subida(
     """Paso 2: sube a R2 el archivo ya analizado y crea el track en el catálogo."""
     entrada = staging.retirar(body.staging_id, usuario.user_id)
     if entrada is None:
+        # El "30 min" venía HARDCODEADO acá como texto — quedó mintiendo
+        # cuando STAGING_TTL_SEG se estiró a 90 min (ver app/config.py):
+        # el vencimiento real ya era de 90 min, pero el mensaje seguía
+        # diciendo 30. Ahora sale del mismo valor que usa app/staging.py,
+        # para que no vuelvan a desincronizarse.
+        minutos = settings.STAGING_TTL_SEG // 60
         raise HTTPException(
             status_code=404,
-            detail="No se encontró el análisis — puede haber vencido (30 min). Volvé a subir el archivo.",
+            detail=f"No se encontró el análisis — puede haber vencido ({minutos} min). Volvé a subir el archivo.",
         )
 
     # Todo lo de acá trabaja sobre entrada.ruta_mp3 (el archivo en disco),

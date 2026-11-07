@@ -166,17 +166,19 @@ de subir de verdad.
 
 1. `POST /tracks/analyze` (multipart: `file`, `titulo`, `remixer`) →
    transcodifica y analiza, deja el MP3 ya convertido esperando en
-   memoria del servidor, devuelve `staging_id` + métricas + posibles
-   duplicados.
+   disco (ver `app/staging.py`), devuelve `staging_id` + métricas +
+   posibles duplicados.
 2. `POST /tracks/confirm` (JSON con `staging_id` + resto de los
    metadatos del track) → recién ahí sube el archivo a R2 e inserta
    la fila en `tracks`.
 
-El archivo en espera vive en memoria del proceso (no en disco ni en
-una cola compartida) y vence solo a los 30 minutos (`STAGING_TTL_SEG`).
-Para 20-30 DJs y un servidor con un solo worker alcanza de sobra; si
-en algún momento este backend corre con varias réplicas, esa espera
-tiene que moverse a algo compartido (Redis, por ejemplo).
+El archivo en espera vive en disco (no en memoria del proceso, ni en
+una cola compartida) y vence a los 90 minutos (`STAGING_TTL_SEG`) si
+nadie lo confirma. Para 20-30 DJs y un servidor con un solo worker
+alcanza de sobra; si en algún momento este backend corre con varias
+réplicas, esa espera tiene que moverse a algo compartido (Redis, un
+bucket temporal en R2, etc.) porque cada proceso tendría su propio
+directorio de espera y no se verían entre sí.
 
 ## Deploy
 

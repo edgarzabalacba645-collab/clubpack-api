@@ -39,8 +39,11 @@ class Settings:
     ]
 
     # Cuánto tiempo queda disponible un archivo ya analizado/transcodificado
-    # esperando la confirmación de subida, antes de descartarse de memoria.
-    STAGING_TTL_SEG = int(_env("STAGING_TTL_SEG", "1800"))  # 30 min
+    # esperando la confirmación de subida, antes de descartarse (ver
+    # app/staging.py — el archivo en sí vive en disco, no en RAM, así que
+    # extender esto no vuelve a traer el problema de memoria de sesiones
+    # largas; solo ocupa disco un rato más).
+    STAGING_TTL_SEG = int(_env("STAGING_TTL_SEG", "5400"))  # 90 min
 
     # Tamaño máximo de archivo de audio aceptado en /tracks/analyze.
     MAX_UPLOAD_MB = int(_env("MAX_UPLOAD_MB", "200"))

@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import audio
 from .config import settings
-from .routers import duplicados, imagenes, playlists, suscripcion, tracks, webhooks
+from .routers import duplicados, imagenes, playlists, suscripcion, tracks, uso, webhooks
 
 logging.basicConfig(level=logging.INFO)
 
@@ -51,6 +51,7 @@ app.include_router(duplicados.router)
 app.include_router(playlists.router)
 app.include_router(suscripcion.router)
 app.include_router(imagenes.router)
+app.include_router(uso.router)
 app.include_router(webhooks.router)
 
 

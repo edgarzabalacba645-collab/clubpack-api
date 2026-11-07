@@ -78,5 +78,16 @@ class Settings:
     # Tamaño máximo de imagen aceptada (portadas de track, herramientas DJ).
     MAX_IMAGEN_MB = int(_env("MAX_IMAGEN_MB", "8"))
 
+    # --- Balance de uso de Cloudflare R2 (panel de Admin) ---
+    # Token de Cloudflare APARTE de las credenciales de R2 de arriba — esas
+    # son para subir/bajar archivos (API compatible con S3), esta es para
+    # leer estadísticas de uso vía la GraphQL Analytics API de Cloudflare.
+    # Se genera a mano en dash.cloudflare.com > Mi perfil > API Tokens, con
+    # el permiso de cuenta "Account Analytics" en modo "Read" — nada más
+    # (no puede escribir ni borrar nada). Opcional: si falta, el endpoint
+    # de uso responde con un aviso claro en vez de romper el resto de la
+    # API (ver app/cloudflare_uso.py).
+    CLOUDFLARE_API_TOKEN = _env("CLOUDFLARE_API_TOKEN")
+
 
 settings = Settings()

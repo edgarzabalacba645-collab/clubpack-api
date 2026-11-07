@@ -39,6 +39,72 @@ def _hay_herramienta(nombre: str) -> bool:
     return shutil.which(nombre) is not None
 
 
+def precalentar_librosa() -> None:
+    """
+    Fuerza, con audio de mentira (2 segundos de silencio), los mismos dos
+    caminos de librosa que usan detectar_bpm (beat_track) y detectar_key
+    (chroma_cqt) — pensado para llamarse UNA vez al arrancar el server
+    (ver app/main.py), antes de aceptar pedidos reales.
+
+    Por qué existe esto: ninguna de las dos funciones tarda nada por sí
+    misma con un clip de 2 segundos — lo que es lento (y pesado) es lo que
+    pasa la PRIMERA vez que se llama a cualquiera de las dos en la vida del
+    proceso: numba (que libROSA usa para acelerar beat_track/chroma_cqt)
+    recién ahí importa y prepara su máquina de compilación JIT basada en
+    LLVM (numba + llvmlite + su cache de compilación), y eso solo —
+    medido en un entorno comparable — agrega entre 200 y 350MB a la
+    memoria residente del proceso Python. Ese costo es FIJO (no depende
+    del tamaño ni duración del audio real: pasa igual con un clip de 2
+    segundos) y queda en memoria para siempre una vez pagado (los módulos
+    de Python no se "desimportan").
+
+    El problema no era entonces el tamaño del archivo subido en sí
+    (eso ya se resolvió escribiéndolo a disco en vez de bytes en memoria,
+    ver la nota al principio de este archivo) — era que ese golpe de
+    ~300MB de numba pasaba recién la PRIMERA VEZ que alguien subía un
+    track y llegaba a detectar_bpm/detectar_key, que en el plan gratuito
+    de Render (512MB en total para TODO el proceso) coincidía justo con
+    el peor momento posible: mientras el archivo transcodificado (hasta
+    ~200MB) seguía en disco y el proceso ya venía de escribir/leer esa
+    cantidad de datos. Haciendo este "precalentamiento" al arrancar el
+    server — sin ningún archivo real en juego, con el proceso recién
+    iniciado y memoria de sobra — ese costo fijo queda pagado de una vez,
+    en un momento tranquilo, y cada subida real que llega después ya no
+    tiene que pagarlo (solo le queda el costo chico y proporcional de
+    analizar SU propio segmento de audio).
+
+    Si algo falla acá (falta numpy/librosa, o lo que sea), no tiene que
+    tirar abajo el arranque del server — en el peor caso, detectar_bpm/
+    detectar_key van a pagar este mismo costo más tarde, en el primer
+    pedido real, que es exactamente la situación que esto busca evitar,
+    pero no es motivo para que el server ni arranque.
+    """
+    try:
+        import warnings
+
+        import numpy as np
+
+        import librosa
+
+        # 4 segundos de silencio: alcanza para que chroma_cqt no se queje
+        # de que la ventana de FFT es más grande que la señal (eso sí
+        # pasaba con menos). Los warnings que SÍ quedan (p.ej. "no se
+        # puede estimar la afinación" — lógico, es silencio puro) no
+        # importan para nada acá, así que se silencian para no ensuciar
+        # los logs de arranque con ruido que no significa un problema.
+        y = np.zeros(22050 * 4, dtype=np.float32)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            librosa.beat.beat_track(y=y, sr=22050)
+            librosa.feature.chroma_cqt(y=y, sr=22050)
+        logger.info("Precalentamiento de librosa/numba listo (beat_track + chroma_cqt).")
+    except Exception:
+        logger.exception(
+            "No se pudo precalentar librosa/numba al arrancar — "
+            "el primer análisis real va a pagar ese costo en su lugar."
+        )
+
+
 def transcodificar_a_mp3_320(ruta_entrada: Path, ruta_salida: Path) -> tuple[Path, str | None]:
     """
     Convierte cualquier audio soportado por ffmpeg a MP3 CBR 320kbps,

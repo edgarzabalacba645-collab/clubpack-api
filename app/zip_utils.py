@@ -1,20 +1,21 @@
 """
-Arma un ZIP en memoria con varios tracks para descargar de una,
-pensado para selecciones del catálogo o playlists enteras.
+Nombres de archivo para descargas de uno o varios tracks (selecciones
+del catálogo o playlists enteras).
 
-Portado de utils/zip_download.py del prototipo en Streamlit — misma lógica.
-
-Nota de costos: esto baja cada archivo de R2 al servidor y lo vuelve a
-subir como ZIP al navegador del usuario — el doble de transferencia que
-una descarga individual. Para 20-30 usuarios con MP3 320kbps no es un
-problema, pero si el grupo crece mucho conviene revisarlo.
+Hasta hace poco este módulo también armaba el ZIP en sí (ver
+armar_zip, ya eliminada): bajaba cada archivo de R2 al servidor y lo
+volvía a subir como ZIP al navegador, el doble de transferencia que
+una descarga individual — y esos bytes se quedaban en la memoria del
+proceso mientras tanto. Con el plan gratis de Render (512MB) varias
+selecciones grandes pedidas en simultáneo podían sumar más memoria de
+la que hay disponible (mismo tipo de problema que las subidas de
+archivos largos, ver app/audio.py::precalentar_librosa). Ahora
+tracks.py y playlists.py devuelven una URL firmada por track en vez de
+armar nada acá — ver DescargaMultipleResponse en app/schemas.py — así
+que esto quedó reducido a los helpers de nombre de archivo.
 """
 
-import io
 import re
-import zipfile
-
-from .storage import descargar_bytes
 
 
 def _nombre_seguro(texto: str) -> str:
@@ -47,30 +48,3 @@ def nombre_descarga(track: dict) -> str:
 
     piezas = [p for p in (izquierda, titulo, remixer) if p]
     return _nombre_seguro(" - ".join(piezas))
-
-
-def armar_zip(tracks: list[dict]) -> bytes:
-    """
-    tracks: lista de dicts con al menos 'titulo' y 'storage_path' (ver
-    nombre_descarga para los demás campos que usa el nombre de archivo).
-    Devuelve los bytes del ZIP.
-    """
-    buffer = io.BytesIO()
-
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_STORED) as zf:
-        nombres_usados = set()
-        for t in tracks:
-            contenido = descargar_bytes(t["storage_path"])
-
-            base = nombre_descarga(t)
-            nombre_archivo = f"{base}.mp3"
-            sufijo = 2
-            while nombre_archivo in nombres_usados:
-                nombre_archivo = f"{base} ({sufijo}).mp3"
-                sufijo += 1
-            nombres_usados.add(nombre_archivo)
-
-            zf.writestr(nombre_archivo, contenido)
-
-    buffer.seek(0)
-    return buffer.read()

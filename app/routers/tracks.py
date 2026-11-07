@@ -5,14 +5,15 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
-from fastapi.responses import StreamingResponse
 
 from .. import audio, duplicados, staging, storage, zip_utils
 from ..config import settings
 from ..deps import UsuarioAutenticado, get_usuario_actual, requiere_acceso_activo, requiere_admin
 from ..schemas import (
     AnalisisTrackResponse,
+    ArchivoDescarga,
     ConfirmarSubidaRequest,
+    DescargaMultipleResponse,
     DescargaUrlResponse,
     DuplicadoCandidato,
     TrackOut,
@@ -309,11 +310,21 @@ def obtener_url_descarga(
     return DescargaUrlResponse(url=url, expira_seg=expira)
 
 
-@router.post("/zip")
+@router.post("/zip", response_model=DescargaMultipleResponse)
 def descargar_zip(
     body: ZipRequest,
     usuario: UsuarioAutenticado = Depends(requiere_acceso_activo),
 ):
+    """
+    El nombre de la ruta (y de la función) quedó de cuando esto armaba un
+    ZIP de verdad — ver zip_utils.armar_zip, ya eliminada. Ahora devuelve
+    una URL firmada por track (igual que /tracks/{id}/download-url), para
+    que el navegador baje cada archivo directo de R2. Así ni un byte de
+    audio pasa por este servidor: antes, varias selecciones grandes
+    pedidas en simultáneo podían sumar más memoria de la que hay
+    disponible en el plan gratis de Render (el mismo tipo de problema que
+    las subidas de archivos largos — ver audio.precalentar_librosa).
+    """
     resp = (
         usuario.client.table("tracks")
         .select("id, titulo, artista_original, remixer, bpm, storage_path")
@@ -324,19 +335,23 @@ def descargar_zip(
     if not tracks:
         raise HTTPException(status_code=404, detail="No se encontró ninguno de esos tracks.")
 
-    contenido_zip = zip_utils.armar_zip(tracks)
-
+    expira = 300
+    archivos: list[ArchivoDescarga] = []
+    nombres_usados: set[str] = set()
     for t in tracks:
+        base = zip_utils.nombre_descarga(t)
+        nombre = f"{base}.mp3"
+        sufijo = 2
+        while nombre in nombres_usados:
+            nombre = f"{base} ({sufijo}).mp3"
+            sufijo += 1
+        nombres_usados.add(nombre)
+
+        url = storage.generar_url_descarga(t["storage_path"], nombre_descarga=nombre, expira_seg=expira)
+        archivos.append(ArchivoDescarga(nombre=nombre, url=url))
         _registrar_descarga(usuario, t["id"])
 
-    nombre_zip = body.nombre_zip or "clubpack"
-    nombre_zip = zip_utils._nombre_seguro(nombre_zip)
-
-    return StreamingResponse(
-        iter([contenido_zip]),
-        media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{nombre_zip}.zip"'},
-    )
+    return DescargaMultipleResponse(archivos=archivos, expira_seg=expira)
 
 
 @router.delete("/{track_id}")

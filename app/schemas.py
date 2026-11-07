@@ -71,9 +71,25 @@ class DescargaUrlResponse(BaseModel):
     expira_seg: int
 
 
+class ArchivoDescarga(BaseModel):
+    nombre: str
+    url: str
+
+
+class DescargaMultipleResponse(BaseModel):
+    """
+    Una URL firmada por cada track pedido (selección del catálogo o
+    playlist completa) — ver tracks.py::descargar_zip. No arma ningún
+    ZIP: cada archivo se baja directo de R2, el backend no maneja los
+    bytes de audio en absoluto.
+    """
+
+    archivos: list[ArchivoDescarga]
+    expira_seg: int
+
+
 class ZipRequest(BaseModel):
     track_ids: list[str] = Field(min_length=1)
-    nombre_zip: str | None = None
 
 
 class EscaneoResponse(BaseModel):

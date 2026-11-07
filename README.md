@@ -8,7 +8,8 @@ no puede (o no debe) hacer:
   para encontrar duplicados.
 - Guardar y leer los archivos en **Cloudflare R2** (acá viven las claves
   secretas — nunca deben llegar al navegador).
-- Armar **ZIPs** de varios tracks o playlists enteras.
+- Firmar URLs de descarga de **Cloudflare R2** para selecciones o playlists
+  enteras (varios tracks de una, sin armar ningún ZIP — ver más abajo).
 - Correr el **escaneo de duplicados** de todo el catálogo (comparación
   texto + fingerprint, pesada para hacerla en el navegador).
 
@@ -80,8 +81,8 @@ tiene que apuntar a esta misma URL.
 | POST | `/tracks/analyze` | Transcodifica, detecta BPM/duración/fingerprint, chequea duplicados por texto | Suscripción activa |
 | POST | `/tracks/confirm` | Sube a R2 y crea el track en el catálogo | Suscripción activa |
 | GET | `/tracks/{id}/download-url` | URL firmada para bajar un track (loguea la descarga) | Suscripción activa |
-| POST | `/tracks/zip` | ZIP de una selección de tracks (loguea cada descarga) | Suscripción activa |
-| POST | `/playlists/{id}/zip` | ZIP de una playlist completa | Suscripción activa |
+| POST | `/tracks/zip` | URL firmada por track de una selección, para bajarlos directo de R2 (loguea cada descarga) — el nombre quedó de cuando armaba un ZIP de verdad, ver nota abajo | Suscripción activa |
+| POST | `/playlists/{id}/zip` | Lo mismo para una playlist completa | Suscripción activa |
 | POST | `/admin/duplicados/scan` | Escanea todo el catálogo buscando duplicados | Admin |
 | GET | `/admin/duplicados` | Lista los duplicados pendientes de revisión | Admin |
 | PATCH | `/admin/duplicados/{id}` | Marca un duplicado como descartado/resuelto | Admin |
@@ -95,6 +96,17 @@ bucket, que el frontend nunca tiene. Lo usa el panel de Admin al
 resolver un duplicado ("Borrar éste"). No es un delete duro — deja la
 fila en `tracks` con `estado='eliminado'` para no perder el historial
 de descargas/duplicados asociado a ese track.
+
+**Sobre `/tracks/zip` y `/playlists/{id}/zip`**: originalmente bajaban
+cada archivo de R2 a la memoria del backend y armaban un ZIP ahí mismo
+antes de mandarlo — con el plan gratis de Render (512MB) varias
+selecciones grandes pedidas en simultáneo podían sumar más memoria de
+la que hay disponible. Ahora devuelven una URL firmada por track (el
+mismo mecanismo que `/tracks/{id}/download-url`) y el navegador baja
+cada archivo directo de R2, uno tras otro — cero bytes de audio pasan
+por este servidor. El nombre de la ruta quedó igual por no romper el
+frontend sin necesidad; lo que cambió es la respuesta (antes el ZIP en
+sí, ahora la lista de URLs).
 
 ### Suscripción paga (Mercado Pago + transferencia manual)
 

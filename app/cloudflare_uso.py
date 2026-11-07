@@ -93,6 +93,7 @@ query($accountTag: string!, $start: Time!, $end: Time!, $bucket: string!) {
         orderBy: [datetime_DESC]
       ) {
         max { payloadSize metadataSize objectCount }
+        dimensions { datetime }
       }
     }
   }

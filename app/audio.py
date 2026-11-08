@@ -354,6 +354,75 @@ def detectar_key(ruta_mp3: Path, duracion_seg: int | None = None) -> str | None:
     return mejor_camelot
 
 
+PEAKS_CANTIDAD_PUNTOS = 1200  # fijo sin importar la duración — alcanza para que se vea prolijo en cualquier ancho
+PEAKS_SAMPLE_RATE = 4000  # bajísimo a propósito: solo hace falta la ENVOLVENTE de volumen, no la señal real
+
+
+def calcular_peaks(ruta_mp3: Path) -> list[float] | None:
+    """
+    Calcula una "huella" simplificada del volumen de TODO el tema — el
+    pico de amplitud en cada uno de PEAKS_CANTIDAD_PUNTOS tramos iguales
+    — para que el player pueda dibujar la onda y arrancar a reproducir
+    SIN tener que bajar y decodificar el archivo entero primero (eso es
+    lo que hace wavesurfer.js por su cuenta si no le pasamos esto — ver
+    Fetcher.fetchBlob/Decoder.decode en loadAudio(), en su código fuente:
+    solo se saltea ese paso si se le pasa channelData ya calculado).
+
+    A diferencia de detectar_bpm/detectar_key (que miran nada más un
+    segmento corto), ACÁ sí hace falta recorrer el tema entero — es la
+    envolvente de TODO el audio. Para no repetir el golpe de memoria de
+    decodificar el archivo completo (ver nota de memoria al principio de
+    este archivo), NO se usa librosa.load (decodifica a float32 a
+    22050Hz — pesado para sesiones largas, y encima dispara el import
+    pesado de numba) sino ffmpeg derecho a una resolución bajísima
+    (4000Hz, mono, 16 bits): alcanza de sobra para una envolvente de
+    volumen, no hace falta fidelidad de audio real. Una sesión de 1 hora
+    a esa resolución pesa ~29MB mientras se calcula esto — bien lejos
+    del límite de 512MB del plan gratis de Render.
+
+    Devuelve una lista de ~1200 floats entre 0 y 1 (redondeados a 3
+    decimales, para no inflar de más el JSON que se guarda — con esto
+    cada track pesa unos 4-10KB en la columna `peaks` de la tabla
+    tracks), o None si falta ffmpeg/numpy o no se pudo leer nada.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        return None
+    if not _hay_herramienta("ffmpeg"):
+        return None
+
+    resultado = subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", str(ruta_mp3),
+            "-ar", str(PEAKS_SAMPLE_RATE), "-ac", "1", "-f", "s16le", "pipe:1",
+        ],
+        capture_output=True,
+    )
+    if resultado.returncode != 0 or not resultado.stdout:
+        logger.warning(
+            "ffmpeg no pudo decodificar el audio para calcular los peaks: %s",
+            resultado.stderr.decode(errors="ignore")[-300:],
+        )
+        return None
+
+    try:
+        muestras = np.frombuffer(resultado.stdout, dtype="<i2").astype(np.float32) / 32768.0
+        if muestras.size == 0:
+            return None
+
+        cantidad = min(PEAKS_CANTIDAD_PUNTOS, muestras.size)
+        bordes = np.linspace(0, muestras.size, cantidad + 1, dtype=np.int64)
+        picos = [
+            float(np.abs(muestras[bordes[i]:bordes[i + 1]]).max()) if bordes[i + 1] > bordes[i] else 0.0
+            for i in range(cantidad)
+        ]
+        return [round(p, 3) for p in picos]
+    except Exception:
+        logger.exception("Falló el cálculo de peaks del waveform")
+        return None
+
+
 def calcular_fingerprint(ruta_mp3: Path) -> str | None:
     """
     Fingerprint de Chromaprint (fpcalc) para detectar el mismo audio

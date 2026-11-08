@@ -69,6 +69,22 @@ class TrackOut(BaseModel):
 class DescargaUrlResponse(BaseModel):
     url: str
     expira_seg: int
+    duracion_seg: int | None = None
+    # Envolvente de volumen precalculada (ver audio.py::calcular_peaks) —
+    # None si este track todavía no la tiene (temas viejos sin backfill
+    # todavía, o si el cálculo falló al subirlo). El player la usa para
+    # arrancar a reproducir sin bajar+decodificar el archivo entero;
+    # sin ella, simplemente usa el camino viejo para ESE tema puntual.
+    peaks: list[float] | None = None
+
+
+class TrackPendientePeaks(BaseModel):
+    id: str
+    titulo: str
+
+
+class PendientesPeaksResponse(BaseModel):
+    tracks: list[TrackPendientePeaks]
 
 
 class ArchivoDescarga(BaseModel):

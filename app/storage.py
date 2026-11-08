@@ -105,6 +105,18 @@ def descargar_bytes(storage_path: str) -> bytes:
     return obj["Body"].read()
 
 
+def descargar_a_archivo(storage_path: str, ruta_destino: Path):
+    """
+    Como descargar_bytes, pero escribiendo directo a disco (`download_file`
+    baja en chunks al archivo) en vez de juntar el audio entero como bytes
+    de Python — mismo motivo que subir_archivo_desde_ruta. La usa el
+    backfill de peaks (ver audio.calcular_peaks / routers/tracks.py), que
+    puede correr sobre sesiones largas ya subidas al catálogo.
+    """
+    cliente = _cliente_r2()
+    cliente.download_file(settings.R2_BUCKET_NAME, storage_path, str(ruta_destino))
+
+
 def borrar_archivo(storage_path: str):
     cliente = _cliente_r2()
     cliente.delete_object(Bucket=settings.R2_BUCKET_NAME, Key=storage_path)

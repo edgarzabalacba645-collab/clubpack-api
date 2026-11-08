@@ -16,6 +16,7 @@ from ..schemas import (
     DescargaMultipleResponse,
     DescargaUrlResponse,
     DuplicadoCandidato,
+    PendientesPeaksResponse,
     TrackOut,
     ZipRequest,
 )
@@ -200,6 +201,11 @@ def confirmar_subida(
             if body.key_armonica is not None
             else audio.detectar_key(entrada.ruta_mp3, duracion_seg=duracion_seg)
         )
+        # Ver audio.py::calcular_peaks — si falla (ffmpeg/numpy ausentes,
+        # archivo raro) no bloquea la subida: el track queda creado igual,
+        # solo que sin peaks (el player usa el camino viejo, más lento,
+        # para ESE tema puntual nada más).
+        peaks = audio.calcular_peaks(entrada.ruta_mp3)
 
         fila = {
             "titulo": body.titulo,
@@ -214,6 +220,7 @@ def confirmar_subida(
             "tamano_mb": round(entrada.ruta_mp3.stat().st_size / (1024 * 1024), 2),
             "subido_por": usuario.user_id,
             "audio_fingerprint": fingerprint,
+            "peaks": peaks,
         }
 
         try:
@@ -280,7 +287,7 @@ def obtener_url_descarga(
     """
     resp = (
         usuario.client.table("tracks")
-        .select("id, titulo, artista_original, remixer, bpm, storage_path")
+        .select("id, titulo, artista_original, remixer, bpm, storage_path, duracion_seg, peaks")
         .eq("id", track_id)
         .maybe_single()
         .execute()
@@ -314,7 +321,12 @@ def obtener_url_descarga(
     if registrar:
         _registrar_descarga(usuario, track_id)
 
-    return DescargaUrlResponse(url=url, expira_seg=expira)
+    return DescargaUrlResponse(
+        url=url,
+        expira_seg=expira,
+        duracion_seg=track.get("duracion_seg"),
+        peaks=track.get("peaks"),
+    )
 
 
 @router.post("/zip", response_model=DescargaMultipleResponse)
@@ -359,6 +371,74 @@ def descargar_zip(
         _registrar_descarga(usuario, t["id"])
 
     return DescargaMultipleResponse(archivos=archivos, expira_seg=expira)
+
+
+@router.get("/admin/pendientes-peaks", response_model=PendientesPeaksResponse)
+def listar_pendientes_peaks(usuario: UsuarioAutenticado = Depends(requiere_admin)):
+    """
+    Temas activos que todavía no tienen la envolvente de volumen
+    calculada (ver audio.py::calcular_peaks) — los que ya estaban en el
+    catálogo antes de que existiera esta función. AdminPage los lista y
+    llama a /tracks/{id}/calcular-peaks uno por vez para ir resolviendo
+    el backfill (de a uno, no en paralelo, para no competir por memoria
+    en el plan gratis de Render con ffmpeg corriendo varias veces junto).
+    """
+    resp = (
+        usuario.client.table("tracks")
+        .select("id, titulo")
+        .is_("peaks", "null")
+        .eq("estado", "activo")
+        .order("fecha_subida", desc=False)
+        .execute()
+    )
+    return PendientesPeaksResponse(tracks=resp.data or [])
+
+
+@router.post("/{track_id}/calcular-peaks", response_model=TrackOut)
+def calcular_peaks_track(
+    track_id: str,
+    usuario: UsuarioAutenticado = Depends(requiere_admin),
+):
+    """
+    Backfill de UN track ya subido a R2 antes de que existiera el cálculo
+    de peaks: lo baja a disco (nunca a memoria completa — ver
+    storage.descargar_a_archivo), calcula la envolvente y la guarda.
+    Pensado para los ~180 temas del catálogo que había al momento de
+    agregar esto; los temas nuevos ya la calculan solos en /tracks/confirm.
+    """
+    resp = (
+        usuario.client.table("tracks")
+        .select("id, storage_path")
+        .eq("id", track_id)
+        .maybe_single()
+        .execute()
+    )
+    track = resp.data
+    if not track:
+        raise HTTPException(status_code=404, detail="Track no encontrado.")
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="clubpack_peaks_"))
+    try:
+        ruta = tmp_dir / "audio.mp3"
+        try:
+            storage.descargar_a_archivo(track["storage_path"], ruta)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"No se pudo bajar el audio de R2: {e}")
+
+        peaks = audio.calcular_peaks(ruta)
+        if peaks is None:
+            raise HTTPException(
+                status_code=422,
+                detail="No se pudieron calcular los peaks de este track (¿ffmpeg o numpy ausentes en el servidor?).",
+            )
+
+        resp2 = usuario.client.table("tracks").update({"peaks": peaks}).eq("id", track_id).execute()
+        if not resp2.data:
+            raise HTTPException(status_code=400, detail="No se pudo guardar los peaks calculados.")
+
+        return TrackOut(**resp2.data[0])
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @router.delete("/{track_id}")

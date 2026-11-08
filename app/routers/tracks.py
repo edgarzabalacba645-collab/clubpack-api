@@ -301,7 +301,14 @@ def obtener_url_descarga(
             )
 
     nombre = f"{zip_utils.nombre_descarga(track)}.mp3"
-    expira = 300
+    # Antes eran 300 (5 min) — muy justo para el player con reproducción
+    # continua, que ahora pide la URL del PRÓXIMO tema apenas arranca el
+    # actual (no cuando termina), para no depender de un pedido de red
+    # nuevo con la pantalla recién bloqueada (ver player.tsx). Si el tema
+    # actual dura más de 5 minutos, esa URL precargada llegaba vencida al
+    # momento de usarla. 30 minutos da margen de sobra incluso para temas
+    # largos, sin ser un riesgo real en un catálogo privado.
+    expira = 1800
     url = storage.generar_url_descarga(track["storage_path"], nombre_descarga=nombre, expira_seg=expira)
 
     if registrar:

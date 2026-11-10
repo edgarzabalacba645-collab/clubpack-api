@@ -110,6 +110,45 @@ async def subir_portada(
     return ImagenSubidaResponse(path=key)
 
 
+@router.delete("/tracks/{track_id}/portada")
+async def quitar_portada(
+    track_id: str,
+    usuario: UsuarioAutenticado = Depends(requiere_acceso_activo),
+):
+    """
+    Saca la portada propia de un track y lo deja con la genérica de
+    ClubPack (portada_url en null). Pensado para cuando se subió una
+    portada equivocada (p.ej. quedó pegada la de otro tema al cargar)
+    y lo que se quiere es volver al estado "sin portada propia", no
+    reemplazarla por otra. Mismo criterio de permisos que subir_portada.
+    """
+    resp = (
+        usuario.client.table("tracks")
+        .select("id, subido_por, portada_url")
+        .eq("id", track_id)
+        .maybe_single()
+        .execute()
+    )
+    track = resp.data
+    if not track:
+        raise HTTPException(status_code=404, detail="Track no encontrado.")
+    if track.get("subido_por") != usuario.user_id and not _es_admin(usuario):
+        raise HTTPException(status_code=403, detail="Solo quien subió el track (o un admin) puede cambiar su portada.")
+
+    portada_actual = track.get("portada_url")
+    if not portada_actual:
+        return {"ok": True}
+
+    usuario.client.table("tracks").update({"portada_url": None}).eq("id", track_id).execute()
+
+    try:
+        storage.borrar_archivo(portada_actual)
+    except Exception:
+        logger.exception("No se pudo borrar el archivo de portada %s", portada_actual)
+
+    return {"ok": True}
+
+
 @router.post("/admin/herramientas/imagen", response_model=ImagenSubidaResponse)
 async def subir_imagen_herramienta(
     file: UploadFile,

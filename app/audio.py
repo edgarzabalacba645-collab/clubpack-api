@@ -28,6 +28,7 @@ memoria de Python ya no crece con el tamaño del archivo.
 import io
 import json
 import logging
+import resource
 import shutil
 import subprocess
 from pathlib import Path
@@ -37,6 +38,27 @@ logger = logging.getLogger("clubpack.audio")
 
 def _hay_herramienta(nombre: str) -> bool:
     return shutil.which(nombre) is not None
+
+
+def _memoria_mb() -> str:
+    """
+    Memoria residente PICO hasta este momento (nunca baja, aunque el uso
+    real actual sea menor) — para loguear en cada paso de /tracks/analyze
+    y así, si el proceso se cae por falta de memoria, los logs de Render
+    ya muestren en qué paso venía creciendo en vez de tener que adivinar
+    de nuevo (ver el megamix de 58MB/64min que se cayó acá sin que
+    ninguno de los pasos de este archivo pareciera, por su cuenta, capaz
+    de explicarlo — con esto, la próxima vez que pase se va a ver clarito
+    cuál fue).
+
+    RUSAGE_SELF: este proceso Python (ru_maxrss viene en KB en Linux).
+    RUSAGE_CHILDREN: el subproceso con más memoria entre los que ya
+    terminaron (ffmpeg, fpcalc) — Render mata el contenedor entero si la
+    suma de TODOS los procesos supera el límite, no solo este proceso.
+    """
+    propio = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+    hijos = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024
+    return f"proceso={propio:.0f}MB pico, subprocesos={hijos:.0f}MB pico"
 
 
 def precalentar_librosa() -> None:
@@ -97,7 +119,10 @@ def precalentar_librosa() -> None:
             warnings.simplefilter("ignore")
             librosa.beat.beat_track(y=y, sr=22050)
             librosa.feature.chroma_cqt(y=y, sr=22050)
-        logger.info("Precalentamiento de librosa/numba listo (beat_track + chroma_cqt).")
+        logger.info(
+            "Precalentamiento de librosa/numba listo (beat_track + chroma_cqt) — %s",
+            _memoria_mb(),
+        )
     except Exception:
         logger.exception(
             "No se pudo precalentar librosa/numba al arrancar — "
@@ -143,6 +168,7 @@ def transcodificar_a_mp3_320(ruta_entrada: Path, ruta_salida: Path) -> tuple[Pat
         raise RuntimeError(
             f"No se pudo convertir el audio a MP3 320kbps: {resultado.stderr.decode(errors='ignore')[-500:]}"
         )
+    logger.info("transcodificar_a_mp3_320: listo — %s", _memoria_mb())
     return ruta_salida, None
 
 
@@ -487,11 +513,27 @@ def extraer_caratula(ruta_mp3: Path) -> tuple[bytes, str] | None:
 
 
 def analizar_track(ruta_mp3: Path) -> dict:
-    """Corre duración + BPM + tonalidad + fingerprint de una. Pensado para /tracks/analyze."""
+    """
+    Corre duración + BPM + tonalidad + fingerprint de una. Pensado para
+    /tracks/analyze. Logueado paso a paso a propósito: con el plan
+    gratuito de Render (512MB) un megamix grande (58MB/64min) tiró abajo
+    el proceso justo durante este análisis sin que ninguno de estos pasos
+    pareciera, por su cuenta, capaz de explicarlo del todo — con el pico
+    de memoria logueado en cada paso, si se repite va a quedar clarísimo
+    cuál fue en vez de tener que adivinar de nuevo.
+    """
+    logger.info("analizar_track: inicio — %s", _memoria_mb())
     duracion = obtener_duracion_seg(ruta_mp3)
+    logger.info("analizar_track: duración=%ss — %s", duracion, _memoria_mb())
+    bpm = detectar_bpm(ruta_mp3, duracion_seg=duracion)
+    logger.info("analizar_track: bpm=%s — %s", bpm, _memoria_mb())
+    key = detectar_key(ruta_mp3, duracion_seg=duracion)
+    logger.info("analizar_track: key=%s — %s", key, _memoria_mb())
+    fingerprint = calcular_fingerprint(ruta_mp3)
+    logger.info("analizar_track: fingerprint listo — %s", _memoria_mb())
     return {
         "duracion_seg": duracion,
-        "bpm_detectado": detectar_bpm(ruta_mp3, duracion_seg=duracion),
-        "key_detectada": detectar_key(ruta_mp3, duracion_seg=duracion),
-        "fingerprint": calcular_fingerprint(ruta_mp3),
+        "bpm_detectado": bpm,
+        "key_detectada": key,
+        "fingerprint": fingerprint,
     }

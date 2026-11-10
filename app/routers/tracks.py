@@ -93,6 +93,12 @@ def analizar_track(
         if total == 0:
             raise HTTPException(status_code=400, detail="El archivo llegó vacío.")
 
+        logger.info(
+            "/tracks/analyze: subida recibida (%.1fMB) — %s",
+            total / (1024 * 1024),
+            audio._memoria_mb(),
+        )
+
         advertencias: list[str] = []
         try:
             ruta_mp3, aviso = audio.transcodificar_a_mp3_320(ruta_subida, tmp_dir / "convertido.mp3")

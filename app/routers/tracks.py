@@ -139,7 +139,9 @@ def analizar_track(
             caratula_preview = None
 
         tamano_mb = round(ruta_mp3.stat().st_size / (1024 * 1024), 2)
-        staging_id = staging.guardar(ruta_mp3, nombre_original, usuario.user_id)
+        staging_id = staging.guardar(
+            ruta_mp3, nombre_original, usuario.user_id, fingerprint=analisis["fingerprint"]
+        )
 
         return AnalisisTrackResponse(
             staging_id=staging_id,
@@ -189,7 +191,12 @@ def confirmar_subida(
     try:
         storage_path = storage.subir_archivo_desde_ruta(entrada.ruta_mp3, entrada.nombre_original)
 
-        fingerprint = audio.calcular_fingerprint(entrada.ruta_mp3)
+        # Reusa el fingerprint que /tracks/analyze ya calculó para este
+        # mismo archivo (viaja en el staging) — evita correr fpcalc una
+        # segunda vez acá. Con sesiones largas, cada paso pesado de más
+        # en esta misma request es memoria/CPU que no sobra en el plan
+        # gratis de Render (justo donde parecía estar cayendo el proceso).
+        fingerprint = entrada.fingerprint
         duracion_seg = audio.obtener_duracion_seg(entrada.ruta_mp3)
         bpm_final = (
             body.bpm

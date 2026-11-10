@@ -132,7 +132,12 @@ def transcodificar_a_mp3_320(ruta_entrada: Path, ruta_salida: Path) -> tuple[Pat
             "-codec:v", "copy", "-id3v2_version", "3",
             str(ruta_salida),
         ],
-        capture_output=True,
+        # El audio convertido va directo al archivo (ruta_salida) — ffmpeg
+        # no escribe nada útil en stdout acá, así que no hace falta
+        # bufferearlo (stdout=DEVNULL). stderr sí se guarda: es lo único
+        # que tenemos para el mensaje de error si la conversión falla.
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
     )
     if resultado.returncode != 0 or not ruta_salida.exists():
         raise RuntimeError(
@@ -407,14 +412,24 @@ def calcular_peaks(ruta_mp3: Path) -> list[float] | None:
         return None
 
     try:
-        muestras = np.frombuffer(resultado.stdout, dtype="<i2").astype(np.float32) / 32768.0
+        # Antes esto hacía .astype(np.float32) sobre el array ENTERO antes
+        # de recortarlo en tramos — para una sesión larga eso duplicaba en
+        # memoria el buffer completo (int16 + la copia float32 del mismo
+        # tamaño), encima de todo lo demás que ya está en juego en esta
+        # misma request (ver /tracks/confirm). Dejando `muestras` como
+        # vista int16 (sin copiar) y convirtiendo recién cada tramo chico
+        # al sacarle el máximo, el costo extra queda acotado al tamaño de
+        # UN tramo (acá, ~1/1200 del archivo) en vez de al archivo entero.
+        muestras = np.frombuffer(resultado.stdout, dtype="<i2")
         if muestras.size == 0:
             return None
 
         cantidad = min(PEAKS_CANTIDAD_PUNTOS, muestras.size)
         bordes = np.linspace(0, muestras.size, cantidad + 1, dtype=np.int64)
         picos = [
-            float(np.abs(muestras[bordes[i]:bordes[i + 1]]).max()) if bordes[i + 1] > bordes[i] else 0.0
+            float(np.abs(muestras[bordes[i]:bordes[i + 1]]).max()) / 32768.0
+            if bordes[i + 1] > bordes[i]
+            else 0.0
             for i in range(cantidad)
         ]
         return [round(p, 3) for p in picos]

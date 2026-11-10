@@ -55,6 +55,12 @@ class ArchivoEnEspera:
     ruta_mp3: Path
     nombre_original: str
     usuario_id: str
+    # Guardado acá desde /tracks/analyze (que ya lo calculó) para que
+    # /tracks/confirm no tenga que correr fpcalc una segunda vez sobre el
+    # mismo archivo — con sesiones largas, cada corrida de más de un paso
+    # pesado en la misma request es presupuesto de memoria/CPU que no
+    # sobra en el plan gratis de Render (ver nota en app/audio.py).
+    fingerprint: str | None = None
     expira_en: float = field(default_factory=lambda: time.time() + settings.STAGING_TTL_SEG)
 
 
@@ -78,7 +84,12 @@ def _purgar_vencidos():
             _borrar_archivo(entrada.ruta_mp3)
 
 
-def guardar(ruta_mp3_origen: Path, nombre_original: str, usuario_id: str) -> str:
+def guardar(
+    ruta_mp3_origen: Path,
+    nombre_original: str,
+    usuario_id: str,
+    fingerprint: str | None = None,
+) -> str:
     """
     Mueve (no copia) el MP3 ya transcodificado desde su ubicación temporal
     de la request de /analyze hacia el directorio de espera — un solo
@@ -94,6 +105,7 @@ def guardar(ruta_mp3_origen: Path, nombre_original: str, usuario_id: str) -> str
             ruta_mp3=ruta,
             nombre_original=nombre_original,
             usuario_id=usuario_id,
+            fingerprint=fingerprint,
         )
         return staging_id
 

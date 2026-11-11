@@ -324,15 +324,17 @@ def obtener_url_descarga(
     contar una escucha como una descarga en el Top 50. El botón de
     descarga de verdad deja `registrar` en True (default).
 
-    A propósito esto YA NO exige `requiere_acceso_activo` de entrada: los
-    tracks de género "de prueba" (Cuarteto/Cachengue — ver policy
-    "ver_tracks_con_acceso" en sql/006_catalogo_freemium.sql) son visibles
-    para cualquier usuario logueado sin suscripción, así los DJs nuevos
-    pueden escuchar antes de sumarse. El SELECT de abajo ya respeta eso
-    por RLS — si no devuelve nada, este usuario no tiene permiso para ver
-    (ni por lo tanto escuchar) este track puntual. La descarga real
-    (`registrar=true`) sí exige suscripción activa siempre, sea cual sea
-    el género — por eso ese chequeo queda explícito acá, aparte de RLS.
+    Desde sql/012_freemium_v2_vidriera.sql, el catálogo entero (metadata)
+    es visible por RLS para cualquier cuenta logueada — es la "vidriera"
+    para que un DJ nuevo vea qué hay antes de sumarse. Eso significa que
+    "¿se puede ver la fila?" YA NO alcanza como chequeo de "¿se puede
+    escuchar?" (como pasaba con Cuarteto/Cachengue hasta la v1 del
+    freemium): ahora toda fila activa se puede ver. Por eso el chequeo de
+    escucha (`registrar=false`) queda explícito acá, llamando a la
+    función puede_escuchar_track (acceso activo, o está en la muestra
+    gratuita de los últimos 10 de Cachengue — ver esa función). La
+    descarga real (`registrar=true`) sigue exigiendo suscripción activa
+    siempre, sea cual sea el track — nunca entra la muestra gratuita.
     """
     resp = (
         usuario.client.table("tracks")
@@ -352,7 +354,17 @@ def obtener_url_descarga(
                 status_code=403,
                 detail=(
                     "Necesitás una suscripción activa para descargar. "
-                    "Mientras tanto podés escuchar gratis los temas de Cuarteto y Cachengue."
+                    "Mientras tanto podés escuchar gratis los últimos 10 temas de Cachengue."
+                ),
+            )
+    else:
+        puede_escuchar = usuario.client.rpc("puede_escuchar_track", {"p_track_id": track_id}).execute()
+        if not puede_escuchar.data:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Necesitás una suscripción activa para escuchar esto. "
+                    "Mientras tanto podés escuchar gratis los últimos 10 temas de Cachengue."
                 ),
             )
 

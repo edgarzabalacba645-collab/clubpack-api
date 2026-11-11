@@ -80,7 +80,7 @@ tiene que apuntar a esta misma URL.
 |---|---|---|---|
 | POST | `/tracks/analyze` | Transcodifica, detecta BPM/duración/fingerprint, chequea duplicados por texto | Puede subir (suscripción activa, y además habilitado por el admin — ver sql/010_control_subidas.sql) |
 | POST | `/tracks/confirm` | Sube a R2 y crea el track en el catálogo | Puede subir (ídem) |
-| GET | `/tracks/{id}/download-url` | URL firmada para bajar un track (loguea la descarga) | Suscripción activa |
+| GET | `/tracks/{id}/download-url` | URL firmada para bajar (`registrar=true`, default) o solo previsualizar (`registrar=false`, lo usa el player del catálogo) un track | Bajar: suscripción activa siempre. Previsualizar: suscripción activa, o el track está en la muestra gratuita de `obtener_muestra_gratis_cachengue()` (ver sql/012_freemium_v2_vidriera.sql) |
 | POST | `/tracks/zip` | URL firmada por track de una selección, para bajarlos directo de R2 (loguea cada descarga) — el nombre quedó de cuando armaba un ZIP de verdad, ver nota abajo | Suscripción activa |
 | POST | `/playlists/{id}/zip` | Lo mismo para una playlist completa | Suscripción activa |
 | POST | `/chat/audio` | Sube un mp3/wav/flac a R2 (sin transcodificar) para compartir en el chat | Suscripción activa |

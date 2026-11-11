@@ -23,7 +23,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 
 from .. import audio, storage
-from ..deps import UsuarioAutenticado, requiere_acceso_activo
+from ..deps import UsuarioAutenticado, requiere_acceso_activo, requiere_admin
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger("clubpack.chat")
@@ -111,3 +111,35 @@ def obtener_url_audio_chat(
 
     url = storage.generar_url_descarga(fila["audio_storage_path"], expira_seg=600)
     return {"url": url}
+
+
+@router.delete("/mensajes")
+def limpiar_chat(
+    usuario: UsuarioAutenticado = Depends(requiere_admin),
+):
+    """
+    Vacía TODO el historial del chat de una — pensado para después de
+    procesar lo que mandaron los suscriptores por acá (ver /chat/audio),
+    no para borrar un mensaje puntual (eso ya lo cubre la policy RLS
+    "borrar_mensaje_propio_o_admin" directo desde el frontend, sin pasar
+    por este backend). Pasa por acá porque además de las filas hay que
+    borrar de R2 cada audio adjunto — si no, quedarían huérfanos ahí
+    (ocupando espacio en el bucket) sin ninguna fila que los referencie.
+    """
+    resp = usuario.client.table("mensajes_chat").select("id, audio_storage_path").execute()
+    filas = resp.data or []
+    if not filas:
+        return {"ok": True, "borrados": 0}
+
+    for fila in filas:
+        if fila.get("audio_storage_path"):
+            try:
+                storage.borrar_archivo(fila["audio_storage_path"])
+            except Exception:
+                # Si el archivo ya no estaba en R2 (o falla transitoriamente),
+                # igual queremos vaciar el chat — no bloqueamos por esto.
+                logger.exception("No se pudo borrar de R2 el audio del mensaje %s", fila["id"])
+
+    ids = [fila["id"] for fila in filas]
+    usuario.client.table("mensajes_chat").delete().in_("id", ids).execute()
+    return {"ok": True, "borrados": len(ids)}

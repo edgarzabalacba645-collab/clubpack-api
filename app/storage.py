@@ -45,7 +45,7 @@ def subir_archivo(contenido: bytes, nombre_original: str) -> str:
     return key
 
 
-def subir_archivo_desde_ruta(ruta: Path, nombre_original: str) -> str:
+def subir_archivo_desde_ruta(ruta: Path, nombre_original: str, carpeta: str = "tracks") -> str:
     """
     Como subir_archivo, pero leyendo directo desde disco (`upload_fileobj`
     sube en chunks desde el handle del archivo) en vez de cargar el audio
@@ -54,9 +54,14 @@ def subir_archivo_desde_ruta(ruta: Path, nombre_original: str) -> str:
     proceso en el plan gratuito de Render (ver nota en app/audio.py).
     Usar esta versión siempre que el MP3 ya esté en disco, como en
     /tracks/confirm.
+
+    `carpeta` separa los audios "oficiales" del catálogo (tracks/, el
+    default) de otros usos — p.ej. "chat-audios/" para lo que se
+    comparte en el chat (ver app/routers/chat.py), que no pasa por
+    transcodificación ni análisis.
     """
     extension = nombre_original.rsplit(".", 1)[-1].lower() if "." in nombre_original else "mp3"
-    key = f"tracks/{uuid.uuid4()}.{extension}"
+    key = f"{carpeta}/{uuid.uuid4()}.{extension}"
 
     cliente = _cliente_r2()
     with open(ruta, "rb") as f:

@@ -64,6 +64,31 @@ def requiere_acceso_activo(
     return usuario
 
 
+def requiere_puede_subir(
+    usuario: UsuarioAutenticado = Depends(get_usuario_actual),
+) -> UsuarioAutenticado:
+    """
+    Exige que el usuario pueda subir temas — admin siempre puede; un
+    suscriptor con acceso activo puede solo si el admin lo tiene
+    habilitado (ver sql/010_control_subidas.sql, tabla
+    configuracion_catalogo). Mismo criterio que puede_subir_temas() en
+    SQL, que es además la que de verdad protege el insert en `tracks`
+    por RLS — este chequeo acá es solo para frenar temprano, en
+    /tracks/analyze, ANTES de gastar CPU/memoria transcodificando un
+    archivo que después /tracks/confirm igual iba a rechazar.
+    """
+    resp = usuario.client.rpc("puede_subir_temas").execute()
+    if not resp.data:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Por ahora las subidas las gestiona el administrador del grupo. "
+                "Mandale el tema por el chat de la comunidad y lo sube él."
+            ),
+        )
+    return usuario
+
+
 def requiere_admin(
     usuario: UsuarioAutenticado = Depends(get_usuario_actual),
 ) -> UsuarioAutenticado:

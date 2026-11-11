@@ -8,7 +8,13 @@ from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 
 from .. import audio, duplicados, staging, storage, zip_utils
 from ..config import settings
-from ..deps import UsuarioAutenticado, get_usuario_actual, requiere_acceso_activo, requiere_admin
+from ..deps import (
+    UsuarioAutenticado,
+    get_usuario_actual,
+    requiere_acceso_activo,
+    requiere_admin,
+    requiere_puede_subir,
+)
 from ..schemas import (
     AnalisisTrackResponse,
     ArchivoDescarga,
@@ -52,7 +58,7 @@ def analizar_track(
     file: UploadFile,
     titulo: str = Form(...),
     remixer: str = Form(""),
-    usuario: UsuarioAutenticado = Depends(requiere_acceso_activo),
+    usuario: UsuarioAutenticado = Depends(requiere_puede_subir),
 ):
     """
     Paso 1 de la subida: transcodifica a MP3 320, detecta duración/BPM/
@@ -172,7 +178,7 @@ def analizar_track(
 @router.post("/confirm", response_model=TrackOut)
 def confirmar_subida(
     body: ConfirmarSubidaRequest,
-    usuario: UsuarioAutenticado = Depends(requiere_acceso_activo),
+    usuario: UsuarioAutenticado = Depends(requiere_puede_subir),
 ):
     """Paso 2: sube a R2 el archivo ya analizado y crea el track en el catálogo."""
     entrada = staging.retirar(body.staging_id, usuario.user_id)

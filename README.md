@@ -86,6 +86,7 @@ tiene que apuntar a esta misma URL.
 | POST | `/chat/audio` | Sube un mp3/wav/flac a R2 (sin transcodificar) para compartir en el chat | Suscripción activa |
 | GET | `/chat/mensajes/{id}/audio-url` | URL firmada para escuchar/bajar el audio adjunto a un mensaje del chat | Suscripción activa (y poder ver ese mensaje, vía RLS) |
 | DELETE | `/chat/mensajes` | Vacía todo el historial del chat (mensajes + sus audios en R2) | Admin |
+| POST | `/chat/mensajes/{id}/analizar` | Puente: analiza un audio ya compartido en el chat y lo deja en espera, igual que `/tracks/analyze` pero sin bajarlo/resubirlo a mano | Admin |
 | POST | `/admin/duplicados/scan` | Escanea todo el catálogo buscando duplicados | Admin |
 | GET | `/admin/duplicados` | Lista los duplicados pendientes de revisión | Admin |
 | PATCH | `/admin/duplicados/{id}` | Marca un duplicado como descartado/resuelto | Admin |

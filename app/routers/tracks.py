@@ -53,6 +53,98 @@ def _registrar_descarga(usuario: UsuarioAutenticado, track_id: str):
         logger.exception("No se pudo registrar la descarga del track %s", track_id)
 
 
+def procesar_y_dejar_en_espera(
+    ruta_subida: Path,
+    nombre_original: str,
+    usuario: UsuarioAutenticado,
+    tmp_dir: Path,
+    titulo: str | None = None,
+    remixer: str | None = None,
+) -> AnalisisTrackResponse:
+    """
+    Parte común entre /tracks/analyze (archivo recién subido por el
+    usuario) y el puente desde el chat (POST /chat/mensajes/{id}/analizar
+    en app/routers/chat.py — deja catalogar directo un audio que alguien
+    ya compartió por el chat, sin bajarlo a mano a la computadora del
+    admin y volver a subirlo): transcodifica, analiza, chequea
+    duplicados y deja el archivo en espera de confirmación
+    (/tracks/confirm, igual que cualquier otra subida).
+
+    `titulo`/`remixer` son opcionales: el puente del chat todavía no los
+    tiene (el admin los completa recién en la pantalla de revisión) —
+    en ese caso se saltea el chequeo de duplicados por TEXTO (el de
+    fingerprint, que no depende de esto, corre siempre).
+
+    Recibe `tmp_dir` ya creado (y lo deja para que el que llama lo borre
+    en su propio `finally`) porque quien llama es quien sabe cómo llegó
+    `ruta_subida` ahí (upload en chunks vs. descarga de R2) y por lo
+    tanto quién más puede haber quedado suelto en ese directorio.
+    """
+    advertencias: list[str] = []
+    try:
+        ruta_mp3, aviso = audio.transcodificar_a_mp3_320(ruta_subida, tmp_dir / "convertido.mp3")
+    except RuntimeError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    if aviso:
+        advertencias.append(aviso)
+    # Ya no hace falta el archivo crudo subido una vez transcodificado
+    # (si ffmpeg no estaba disponible, ruta_mp3 ES ruta_subida — no
+    # hay nada que borrar en ese caso).
+    if ruta_mp3 != ruta_subida:
+        ruta_subida.unlink(missing_ok=True)
+
+    analisis = audio.analizar_track(ruta_mp3)
+
+    # Fingerprint primero (es el mismo audio posta, no solo texto parecido)
+    # y de ahí se completa con los parecidos por texto, sin repetir ids.
+    dup_fingerprint = duplicados.chequear_fingerprint_exacto(usuario.client, analisis["fingerprint"])
+    dup_texto = duplicados.chequear_antes_de_subir(usuario.client, titulo, remixer) if titulo is not None else []
+    vistos = {d["id"] for d in dup_fingerprint}
+    duplicados_sospechosos = dup_fingerprint + [d for d in dup_texto if d["id"] not in vistos]
+
+    # Solo lee tags ID3, no vuelve a transcodificar. Si el archivo trae
+    # carátula embebida, se manda como preview en base64 — sin poder
+    # verla, es muy difícil decidir si conviene mantenerla o usar la de
+    # ClubPack (el usuario tendría que ir a buscarla por otro lado y
+    # volver). Esto va ANTES de staging.guardar porque ese paso MUEVE
+    # el archivo de acá — después de eso ya no está en esta ruta.
+    tiene_caratula = False
+    caratula_preview: str | None = None
+    try:
+        caratula = audio.extraer_caratula(ruta_mp3)
+        if caratula:
+            imagen_bytes, extension_caratula = caratula
+            tiene_caratula = True
+            # La elección de mantenerla o no se ofrece igual aunque sea
+            # pesada — lo único que se omite es la miniatura en sí (en
+            # base64 pesa ~33% más que el original).
+            if len(imagen_bytes) <= MAX_CARATULA_PREVIEW_BYTES:
+                mime = "image/png" if extension_caratula == "png" else "image/jpeg"
+                caratula_preview = f"data:{mime};base64,{base64.b64encode(imagen_bytes).decode('ascii')}"
+    except Exception:
+        tiene_caratula = False
+        caratula_preview = None
+
+    tamano_mb = round(ruta_mp3.stat().st_size / (1024 * 1024), 2)
+    staging_id = staging.guardar(
+        ruta_mp3, nombre_original, usuario.user_id, fingerprint=analisis["fingerprint"]
+    )
+
+    return AnalisisTrackResponse(
+        staging_id=staging_id,
+        nombre_original=nombre_original,
+        tamano_mb=tamano_mb,
+        duracion_seg=analisis["duracion_seg"],
+        bpm_detectado=analisis["bpm_detectado"],
+        key_detectada=analisis["key_detectada"],
+        fingerprint=analisis["fingerprint"],
+        advertencias=advertencias,
+        duplicados_sospechosos=[DuplicadoCandidato(**d) for d in duplicados_sospechosos],
+        tiene_caratula_original=tiene_caratula,
+        caratula_original_preview=caratula_preview,
+    )
+
+
 @router.post("/analyze", response_model=AnalisisTrackResponse)
 def analizar_track(
     file: UploadFile,
@@ -105,69 +197,7 @@ def analizar_track(
             audio._memoria_mb(),
         )
 
-        advertencias: list[str] = []
-        try:
-            ruta_mp3, aviso = audio.transcodificar_a_mp3_320(ruta_subida, tmp_dir / "convertido.mp3")
-        except RuntimeError as e:
-            raise HTTPException(status_code=422, detail=str(e))
-        if aviso:
-            advertencias.append(aviso)
-        # Ya no hace falta el archivo crudo subido una vez transcodificado
-        # (si ffmpeg no estaba disponible, ruta_mp3 ES ruta_subida — no
-        # hay nada que borrar en ese caso).
-        if ruta_mp3 != ruta_subida:
-            ruta_subida.unlink(missing_ok=True)
-
-        analisis = audio.analizar_track(ruta_mp3)
-
-        # Fingerprint primero (es el mismo audio posta, no solo texto parecido)
-        # y de ahí se completa con los parecidos por texto, sin repetir ids.
-        dup_fingerprint = duplicados.chequear_fingerprint_exacto(usuario.client, analisis["fingerprint"])
-        dup_texto = duplicados.chequear_antes_de_subir(usuario.client, titulo, remixer)
-        vistos = {d["id"] for d in dup_fingerprint}
-        duplicados_sospechosos = dup_fingerprint + [d for d in dup_texto if d["id"] not in vistos]
-
-        # Solo lee tags ID3, no vuelve a transcodificar. Si el archivo trae
-        # carátula embebida, se manda como preview en base64 — sin poder
-        # verla, es muy difícil decidir si conviene mantenerla o usar la de
-        # ClubPack (el usuario tendría que ir a buscarla por otro lado y
-        # volver). Esto va ANTES de staging.guardar porque ese paso MUEVE
-        # el archivo de acá — después de eso ya no está en esta ruta.
-        tiene_caratula = False
-        caratula_preview: str | None = None
-        try:
-            caratula = audio.extraer_caratula(ruta_mp3)
-            if caratula:
-                imagen_bytes, extension_caratula = caratula
-                tiene_caratula = True
-                # La elección de mantenerla o no se ofrece igual aunque sea
-                # pesada — lo único que se omite es la miniatura en sí (en
-                # base64 pesa ~33% más que el original).
-                if len(imagen_bytes) <= MAX_CARATULA_PREVIEW_BYTES:
-                    mime = "image/png" if extension_caratula == "png" else "image/jpeg"
-                    caratula_preview = f"data:{mime};base64,{base64.b64encode(imagen_bytes).decode('ascii')}"
-        except Exception:
-            tiene_caratula = False
-            caratula_preview = None
-
-        tamano_mb = round(ruta_mp3.stat().st_size / (1024 * 1024), 2)
-        staging_id = staging.guardar(
-            ruta_mp3, nombre_original, usuario.user_id, fingerprint=analisis["fingerprint"]
-        )
-
-        return AnalisisTrackResponse(
-            staging_id=staging_id,
-            nombre_original=nombre_original,
-            tamano_mb=tamano_mb,
-            duracion_seg=analisis["duracion_seg"],
-            bpm_detectado=analisis["bpm_detectado"],
-            key_detectada=analisis["key_detectada"],
-            fingerprint=analisis["fingerprint"],
-            advertencias=advertencias,
-            duplicados_sospechosos=[DuplicadoCandidato(**d) for d in duplicados_sospechosos],
-            tiene_caratula_original=tiene_caratula,
-            caratula_original_preview=caratula_preview,
-        )
+        return procesar_y_dejar_en_espera(ruta_subida, nombre_original, usuario, tmp_dir, titulo=titulo, remixer=remixer)
     finally:
         # Lo que haya quedado acá (el original si se descartó con error,
         # restos si algo falló a mitad de camino) — el convertido ya se

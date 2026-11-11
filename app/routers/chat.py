@@ -24,6 +24,8 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 
 from .. import audio, storage
 from ..deps import UsuarioAutenticado, requiere_acceso_activo, requiere_admin
+from ..schemas import AnalisisTrackResponse
+from .tracks import procesar_y_dejar_en_espera
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 logger = logging.getLogger("clubpack.chat")
@@ -143,3 +145,49 @@ def limpiar_chat(
     ids = [fila["id"] for fila in filas]
     usuario.client.table("mensajes_chat").delete().in_("id", ids).execute()
     return {"ok": True, "borrados": len(ids)}
+
+
+@router.post("/mensajes/{mensaje_id}/analizar", response_model=AnalisisTrackResponse)
+def analizar_audio_de_chat(
+    mensaje_id: str,
+    usuario: UsuarioAutenticado = Depends(requiere_admin),
+):
+    """
+    Puente para catalogar directo un audio que alguien ya compartió por
+    el chat (ver POST /chat/audio) — sin que el admin tenga que bajarlo
+    a su computadora y volver a subirlo a mano. Lo trae de R2 (donde ya
+    está, en chat-audios/) a disco acá en el servidor, y de ahí en más
+    corre EXACTAMENTE el mismo pipeline que /tracks/analyze
+    (transcodifica, detecta BPM/key/fingerprint, chequea duplicados por
+    fingerprint, deja el archivo en espera) — ver
+    tracks.procesar_y_dejar_en_espera, compartida entre los dos. El
+    resultado se confirma después con el mismo /tracks/confirm de
+    siempre, con el admin completando título/remixer/género como en
+    cualquier otra subida (acá todavía no los tenemos, por eso no se
+    chequean duplicados por texto, solo por fingerprint).
+    """
+    resp = (
+        usuario.client.table("mensajes_chat")
+        .select("audio_storage_path, audio_nombre_original")
+        .eq("id", mensaje_id)
+        .maybe_single()
+        .execute()
+    )
+    fila = resp.data
+    if not fila or not fila.get("audio_storage_path"):
+        raise HTTPException(status_code=404, detail="Mensaje no encontrado o sin audio adjunto.")
+
+    nombre_original = fila.get("audio_nombre_original") or "audio.mp3"
+    extension = nombre_original.rsplit(".", 1)[-1].lower() if "." in nombre_original else "mp3"
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="clubpack_chatanalyze_"))
+    try:
+        ruta_subida = tmp_dir / f"original.{extension}"
+        try:
+            storage.descargar_a_archivo(fila["audio_storage_path"], ruta_subida)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"No se pudo bajar el audio de R2: {e}")
+
+        return procesar_y_dejar_en_espera(ruta_subida, nombre_original, usuario, tmp_dir)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)

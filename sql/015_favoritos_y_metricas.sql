@@ -28,13 +28,23 @@
 -- ============================================================
 
 -- ---- 1. Tabla favoritos ----
+-- OJO: con `id` propio como clave primaria y un índice ÚNICO
+-- (usuario_id, track_id) — NO una clave primaria compuesta por las dos
+-- FKs. PostgREST toma a cualquier tabla cuya clave primaria sean FKs a
+-- otras dos tablas como "tabla intermedia" muchos-a-muchos, y eso
+-- convertía a favoritos en un segundo camino tracks↔perfiles: el embed
+-- perfiles(...) del catálogo quedaba ambiguo y la API lo rechazaba
+-- ("more than one relationship was found"). Ver 016 para el arreglo
+-- sobre una base que corrió la primera versión de este archivo.
 create table if not exists public.favoritos (
+    id uuid primary key default gen_random_uuid(),
     usuario_id uuid not null references public.perfiles(id) on delete cascade,
     track_id uuid not null references public.tracks(id) on delete cascade,
-    fecha timestamptz not null default now(),
-    primary key (usuario_id, track_id)
+    fecha timestamptz not null default now()
 );
 
+create unique index if not exists idx_favoritos_usuario_track_unico
+    on public.favoritos (usuario_id, track_id);
 create index if not exists idx_favoritos_track on public.favoritos (track_id);
 
 comment on table public.favoritos is

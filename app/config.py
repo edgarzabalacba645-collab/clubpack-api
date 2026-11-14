@@ -89,5 +89,17 @@ class Settings:
     # API (ver app/cloudflare_uso.py).
     CLOUDFLARE_API_TOKEN = _env("CLOUDFLARE_API_TOKEN")
 
+    # --- Balance de ancho de banda de Render (panel de Admin) ---
+    # Token de cuenta de Render (se genera en Render > Account Settings >
+    # API Keys) — con esto alcanza, la API de métricas de bandwidth no
+    # pide ningún scope especial aparte de estar autenticado. Opcional:
+    # si falta, el endpoint de uso responde con un aviso claro en vez de
+    # romper el resto de la API (ver app/render_uso.py).
+    RENDER_API_KEY = _env("RENDER_API_KEY")
+    # El Service ID de este mismo backend en Render (se ve en la URL del
+    # servicio en el dashboard, ej. srv-xxxxxxxxxxxx) — así la consulta
+    # de bandwidth apunta puntualmente a clubpack-api.
+    RENDER_SERVICE_ID = _env("RENDER_SERVICE_ID")
+
 
 settings = Settings()

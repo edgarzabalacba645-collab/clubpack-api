@@ -1,0 +1,36 @@
+name: Mantener despierto el backend (Render)
+
+# Render (plan gratis) apaga el servicio a los 15 min sin tráfico y
+# tarda 50+ seg en volver a arrancar — eso es la demora al abrir la
+# app y darle play. App.tsx ya manda un ping al abrirse (ver
+# usarDespertarBackend), pero solo adelanta el despertar unos segundos
+# — no alcanza si el arranque en frío tarda 50+ seg y el usuario le da
+# play casi enseguida. Este workflow mantiene el backend despierto de
+# verdad, pingeando /health seguido durante el horario donde es más
+# probable que alguien abra la app.
+#
+# A propósito NO corre las 24 hs: Render da 750 horas gratis de
+# instancia por mes, y una sola instancia corriendo todo el mes ya usa
+# ~720-744 (al límite, sin margen). Dejándolo dormir de madrugada
+# (02:00 a 08:00, hora Argentina) este ping usa ~558 hs/mes, con
+# bastante margen — a costa de que, en esa franja nada más, la primera
+# persona que abra la app esa madrugada se encuentra con la demora de
+# siempre (y ahí sigue ayudando el ping de App.tsx, que adelanta el
+# despertar apenas abre la app).
+#
+# /health no devuelve nada pesado (unos bytes), así que esto no pesa
+# nada en el ancho de banda de Render tampoco.
+on:
+  schedule:
+    # Cada 10 min, de 08:00 a 01:59 hora Argentina (UTC-3) ->
+    # 11:00-23:59 y 00:00-04:59 UTC.
+    - cron: "*/10 0-4,11-23 * * *"
+  # Para poder probarlo a mano desde la pestaña Actions sin esperar al cron.
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping /health
+        run: curl -fsS --max-time 60 https://clubpack-api.onrender.com/health

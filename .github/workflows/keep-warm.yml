@@ -1,31 +1,29 @@
 name: Mantener despierto el backend (Render)
 
-# Render (plan gratis) apaga el servicio a los 15 min sin tráfico y
-# tarda 50+ seg en volver a arrancar — eso es la demora al abrir la
-# app y darle play. App.tsx ya manda un ping al abrirse (ver
-# usarDespertarBackend), pero solo adelanta el despertar unos segundos
-# — no alcanza si el arranque en frío tarda 50+ seg y el usuario le da
-# play casi enseguida. Este workflow mantiene el backend despierto de
-# verdad, pingeando /health seguido durante el horario donde es más
-# probable que alguien abra la app.
+# INTENTO 1, DESACTIVADO — el "schedule: cron" de GitHub Actions NO es
+# confiable a cada 10 min: es "mejor esfuerzo", GitHub lo puede
+# retrasar o directamente saltear corridas bajo carga, y en la
+# práctica acá terminó disparando ~2 veces en 18 hs en vez de las ~100
+# que tendría que haber disparado (ver investigación del 17/11,
+# confirmado también por la propia documentación/comunidad de GitHub:
+# https://upptime.js.org/blog/2021/01/22/github-actions-schedule-not-working/
+# — "a schedule for every five minutes sometimes ran only about once
+# an hour"). O sea que esto nunca llegó a mantener nada despierto de
+# verdad; los mails de "failed" eran las pocas veces que sí disparó,
+# justo agarrando al backend recién arrancando en frío (ver el curl
+# --max-time de abajo, aumentado por eso).
 #
-# A propósito NO corre las 24 hs: Render da 750 horas gratis de
-# instancia por mes, y una sola instancia corriendo todo el mes ya usa
-# ~720-744 (al límite, sin margen). Dejándolo dormir de madrugada
-# (02:00 a 08:00, hora Argentina) este ping usa ~558 hs/mes, con
-# bastante margen — a costa de que, en esa franja nada más, la primera
-# persona que abra la app esa madrugada se encuentra con la demora de
-# siempre (y ahí sigue ayudando el ping de App.tsx, que adelanta el
-# despertar apenas abre la app).
+# Por ahora vuelve a quedar como estaba antes de este workflow: Render
+# se duerme a los 15 min sin tráfico como siempre, con el único paliativo
+# siendo el ping de App.tsx al abrir la app (usarDespertarBackend). Si
+# se decide reactivar el keep-warm de verdad, hace falta un servicio
+# externo pensado para esto (cron-job.org, UptimeRobot, etc.) en vez
+# del cron de GitHub Actions — ese sí cumple el horario que se le pida.
 #
-# /health no devuelve nada pesado (unos bytes), así que esto no pesa
-# nada en el ancho de banda de Render tampoco.
+# El job y el curl quedan funcionando para poder pingear a mano desde
+# la pestaña Actions (botón "Run workflow") cuando haga falta despertarlo
+# ya mismo, por ejemplo antes de un evento.
 on:
-  schedule:
-    # Cada 10 min, de 08:00 a 01:59 hora Argentina (UTC-3) ->
-    # 11:00-23:59 y 00:00-04:59 UTC.
-    - cron: "*/10 0-4,11-23 * * *"
-  # Para poder probarlo a mano desde la pestaña Actions sin esperar al cron.
   workflow_dispatch: {}
 
 jobs:
@@ -33,4 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Ping /health
-        run: curl -fsS --max-time 60 https://clubpack-api.onrender.com/health
+        # 150s, no 60: un arranque en frío de verdad (container +
+        # Python + el pre-calentado de librosa/numba en main.py) a
+        # veces tarda más de 60s, y no tiene sentido marcarlo como
+        # "failed" si el backend igual terminó despertando bien.
+        run: curl -fsS --max-time 150 https://clubpack-api.onrender.com/health

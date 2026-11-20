@@ -11,8 +11,8 @@ from ..config import settings
 from ..deps import (
     UsuarioAutenticado,
     get_usuario_actual,
-    requiere_acceso_activo,
     requiere_admin,
+    requiere_puede_descargar,
     requiere_puede_subir,
 )
 from ..schemas import (
@@ -335,6 +335,13 @@ def obtener_url_descarga(
     gratuita de los últimos 10 de Cachengue — ver esa función). La
     descarga real (`registrar=true`) sigue exigiendo suscripción activa
     siempre, sea cual sea el track — nunca entra la muestra gratuita.
+
+    Desde sql/019_tipo_licencia.sql, la descarga real además exige
+    licencia DJ (no alcanza con acceso activo a secas) — un usuario
+    Simple puede escuchar cualquier track con acceso activo, pero no
+    descargarlo. Por eso el chequeo de abajo pasó de tiene_acceso_activo
+    a puede_descargar, que es además la misma función que de verdad
+    protege el insert en `descargas` por RLS.
     """
     resp = (
         usuario.client.table("tracks")
@@ -348,12 +355,12 @@ def obtener_url_descarga(
         raise HTTPException(status_code=404, detail="Track no encontrado.")
 
     if registrar:
-        acceso = usuario.client.rpc("tiene_acceso_activo").execute()
-        if not acceso.data:
+        puede_descargar = usuario.client.rpc("puede_descargar").execute()
+        if not puede_descargar.data:
             raise HTTPException(
                 status_code=403,
                 detail=(
-                    "Necesitás una suscripción activa para descargar. "
+                    "Tu licencia es Simple (solo escucha) o tu suscripción no está activa. "
                     "Mientras tanto podés escuchar gratis los últimos 10 temas de Cachengue."
                 ),
             )
@@ -393,7 +400,7 @@ def obtener_url_descarga(
 @router.post("/zip", response_model=DescargaMultipleResponse)
 def descargar_zip(
     body: ZipRequest,
-    usuario: UsuarioAutenticado = Depends(requiere_acceso_activo),
+    usuario: UsuarioAutenticado = Depends(requiere_puede_descargar),
 ):
     """
     El nombre de la ruta (y de la función) quedó de cuando esto armaba un
@@ -404,6 +411,10 @@ def descargar_zip(
     pedidas en simultáneo podían sumar más memoria de la que hay
     disponible en el plan gratis de Render (el mismo tipo de problema que
     las subidas de archivos largos — ver audio.precalentar_librosa).
+
+    Pasó de requiere_acceso_activo a requiere_puede_descargar
+    (sql/019_tipo_licencia.sql) — descarga masiva exige licencia DJ,
+    igual que la descarga de a uno.
     """
     resp = (
         usuario.client.table("tracks")

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from .. import storage, zip_utils
-from ..deps import UsuarioAutenticado, requiere_acceso_activo
+from ..deps import UsuarioAutenticado, requiere_puede_descargar
 from ..schemas import ArchivoDescarga, DescargaMultipleResponse
 from .tracks import _registrar_descarga
 
@@ -11,12 +11,19 @@ router = APIRouter(prefix="/playlists", tags=["playlists"])
 @router.post("/{playlist_id}/zip", response_model=DescargaMultipleResponse)
 def descargar_playlist_zip(
     playlist_id: str,
-    usuario: UsuarioAutenticado = Depends(requiere_acceso_activo),
+    usuario: UsuarioAutenticado = Depends(requiere_puede_descargar),
 ):
     """
     Ver el comentario de tracks.py::descargar_zip — misma idea acá: en vez
     de armar un ZIP de la playlist entera en memoria, devuelve una URL
     firmada por track para que el navegador las baje directo de R2.
+
+    Pasó de requiere_acceso_activo a requiere_puede_descargar
+    (sql/019_tipo_licencia.sql) — si no, un Simple podía seguir
+    consiguiendo URLs firmadas reales de descarga pegándole directo a
+    esta ruta (con su propio JWT, sin pasar por el botón que se le
+    esconde en PlaylistsPage), aunque el insert en `descargas` fuera a
+    fallar silencioso después (_registrar_descarga traga la excepción).
     """
     playlist_resp = (
         usuario.client.table("playlists")

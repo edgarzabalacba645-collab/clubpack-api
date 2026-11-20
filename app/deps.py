@@ -89,6 +89,27 @@ def requiere_puede_subir(
     return usuario
 
 
+def requiere_puede_descargar(
+    usuario: UsuarioAutenticado = Depends(get_usuario_actual),
+) -> UsuarioAutenticado:
+    """
+    Exige que el usuario pueda DESCARGAR (no solo escuchar) — admin
+    siempre puede; un suscriptor con acceso activo puede solo si además
+    es licencia DJ (ver sql/019_tipo_licencia.sql). Mismo criterio que
+    puede_descargar() en SQL, que es además la que de verdad protege el
+    insert en `descargas` por RLS — este chequeo acá es solo para
+    devolver un 403 con mensaje claro antes de armar la URL firmada de
+    R2, en vez de un error genérico.
+    """
+    resp = usuario.client.rpc("puede_descargar").execute()
+    if not resp.data:
+        raise HTTPException(
+            status_code=403,
+            detail="Tu licencia es Simple (solo escucha). Para descargar necesitás licencia DJ — consultá con un admin del grupo.",
+        )
+    return usuario
+
+
 def requiere_admin(
     usuario: UsuarioAutenticado = Depends(get_usuario_actual),
 ) -> UsuarioAutenticado:

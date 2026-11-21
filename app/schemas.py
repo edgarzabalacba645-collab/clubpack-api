@@ -87,6 +87,15 @@ class PendientesPeaksResponse(BaseModel):
     tracks: list[TrackPendientePeaks]
 
 
+class TrackPendientePortada(BaseModel):
+    id: str
+    titulo: str
+
+
+class PendientesPortadaResponse(BaseModel):
+    tracks: list[TrackPendientePortada]
+
+
 class ArchivoDescarga(BaseModel):
     nombre: str
     url: str

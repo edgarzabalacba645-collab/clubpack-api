@@ -69,6 +69,21 @@ def subir_archivo_desde_ruta(ruta: Path, nombre_original: str, carpeta: str = "t
     return key
 
 
+def subir_archivo_desde_ruta_reemplazando(ruta: Path, key: str) -> None:
+    """
+    Como subir_archivo_desde_ruta, pero sobrescribiendo una key que YA
+    existe en vez de generar una nueva — para reemplazar en el lugar el
+    audio de un track que ya estaba en el catálogo (ver
+    /tracks/{id}/fijar-portada-generica, backfill de carátula: baja el
+    track, le graba la carátula genérica con audio.fijar_caratula_generica,
+    y lo vuelve a subir acá, a la misma key, para que storage_path no
+    cambie en la tabla tracks).
+    """
+    cliente = _cliente_r2()
+    with open(ruta, "rb") as f:
+        cliente.upload_fileobj(f, settings.R2_BUCKET_NAME, key)
+
+
 def subir_bytes(contenido: bytes, key: str) -> str:
     """
     Como subir_archivo, pero con la key exacta que se le pida (en vez

@@ -23,6 +23,7 @@ from ..schemas import (
     DescargaUrlResponse,
     DuplicadoCandidato,
     PendientesPeaksResponse,
+    PendientesPortadaResponse,
     TrackOut,
     ZipRequest,
 )
@@ -535,6 +536,93 @@ def calcular_peaks_track(
             raise HTTPException(status_code=400, detail="No se pudo guardar los peaks calculados.")
 
         return TrackOut(**resp2.data[0])
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@router.get("/admin/pendientes-portada-generica", response_model=PendientesPortadaResponse)
+def listar_pendientes_portada_generica(usuario: UsuarioAutenticado = Depends(requiere_admin)):
+    """
+    Temas activos que muestran la portada genérica en el catálogo
+    (portada_url null — el usuario eligió NO mantener la carátula
+    original al subir) y por lo tanto son candidatos al backfill que
+    graba esa misma portada genérica DENTRO del archivo (ver
+    audio.fijar_caratula_generica): antes de que existiera ese paso, el
+    archivo real seguía trayendo la carátula vieja del origen aunque el
+    catálogo ya mostrara la genérica. AdminPage los lista y llama a
+    /tracks/{id}/fijar-portada-generica uno por vez — mismo patrón que
+    el backfill de peaks de acá arriba.
+
+    A propósito NO incluye temas con portada_url seteada — esos son
+    justo los que el usuario eligió MANTENER con su carátula original,
+    y no se tocan nunca (el endpoint de abajo repite este mismo chequeo
+    como garantía del lado del servidor, no solo acá en el listado).
+    """
+    resp = (
+        usuario.client.table("tracks")
+        .select("id, titulo")
+        .is_("portada_url", "null")
+        .eq("estado", "activo")
+        .order("fecha_subida", desc=False)
+        .execute()
+    )
+    return PendientesPortadaResponse(tracks=resp.data or [])
+
+
+@router.post("/{track_id}/fijar-portada-generica")
+def fijar_portada_generica_track(
+    track_id: str,
+    usuario: UsuarioAutenticado = Depends(requiere_admin),
+):
+    """
+    Backfill de UN track ya subido a R2 antes de que la elección "no
+    mantener carátula original" también se grabara en el archivo físico
+    (ver audio.fijar_caratula_generica y el comentario en
+    /tracks/confirm): lo baja a disco (nunca a memoria completa — ver
+    storage.descargar_a_archivo), le reemplaza el tag de carátula por la
+    portada genérica de PLAYLIST, y lo vuelve a subir a la MISMA key en
+    R2 (storage.subir_archivo_desde_ruta_reemplazando — el storage_path
+    guardado en la tabla no cambia).
+
+    Nunca toca un track con portada_url seteada — ese es justo el caso
+    en que el usuario eligió mantener su carátula original, y tocar el
+    archivo ahí sería justo lo que no hay que hacer. Este chequeo es la
+    garantía real (ya se filtran afuera en el listado de arriba, pero
+    acá se repite para que este endpoint sea seguro de llamar aunque
+    alguien lo apunte a un track fuera de esa lista).
+    """
+    resp = (
+        usuario.client.table("tracks")
+        .select("id, storage_path, portada_url")
+        .eq("id", track_id)
+        .maybe_single()
+        .execute()
+    )
+    track = resp.data
+    if not track:
+        raise HTTPException(status_code=404, detail="Track no encontrado.")
+    if track.get("portada_url"):
+        raise HTTPException(
+            status_code=400,
+            detail="Este track tiene una carátula original guardada — no se toca.",
+        )
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="clubpack_portada_"))
+    try:
+        ruta = tmp_dir / "audio.mp3"
+        try:
+            storage.descargar_a_archivo(track["storage_path"], ruta)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"No se pudo bajar el audio de R2: {e}")
+
+        audio.fijar_caratula_generica(ruta)
+
+        try:
+            storage.subir_archivo_desde_ruta_reemplazando(ruta, track["storage_path"])
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"No se pudo volver a subir el audio a R2: {e}")
+
+        return {"ok": True}
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

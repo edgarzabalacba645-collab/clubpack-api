@@ -97,7 +97,9 @@ def procesar_y_dejar_en_espera(
 
     # Fingerprint primero (es el mismo audio posta, no solo texto parecido)
     # y de ahí se completa con los parecidos por texto, sin repetir ids.
-    dup_fingerprint = duplicados.chequear_fingerprint_exacto(usuario.client, analisis["fingerprint"])
+    dup_fingerprint = duplicados.chequear_fingerprint_similar(
+        usuario.client, analisis["fingerprint"], analisis["duracion_seg"]
+    )
     dup_texto = duplicados.chequear_antes_de_subir(usuario.client, titulo, remixer) if titulo is not None else []
     vistos = {d["id"] for d in dup_fingerprint}
     duplicados_sospechosos = dup_fingerprint + [d for d in dup_texto if d["id"] not in vistos]

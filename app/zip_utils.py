@@ -28,23 +28,22 @@ def nombre_descarga(track: dict) -> str:
     Arma el nombre de archivo (sin extensión) para una descarga, igual
     para una pista suelta, un ZIP de selección o un ZIP de playlist:
 
-        "BPM Artista - Pista - Remixer"   (el remixer solo si lo tiene,
-                                            el BPM solo si está cargado)
+        "Artista - Pista - Remixer"   (el remixer solo si lo tiene)
 
-    `track` necesita al menos 'titulo'; 'bpm', 'artista_original' y
+    A pedido explícito de Edgar, el BPM quedó afuera del nombre del
+    archivo físico (antes iba adelante: "BPM Artista - Pista -
+    Remixer") — pero el dato en sí no se toca para nada: sigue
+    analizándose, guardándose y mostrándose en la plataforma igual que
+    siempre (ver audio.detectar_bpm y la columna tracks.bpm). Esta
+    función solo arma el nombre para la descarga, así que alcanza con
+    no incluirlo acá.
+
+    `track` necesita al menos 'titulo'; 'artista_original' y
     'remixer' son opcionales (pueden faltar o venir None).
     """
-    partes_izquierda = []
-    bpm = track.get("bpm")
-    if bpm is not None:
-        partes_izquierda.append(str(round(bpm)))
     artista = (track.get("artista_original") or "").strip()
-    if artista:
-        partes_izquierda.append(artista)
-    izquierda = " ".join(partes_izquierda)
-
     titulo = (track.get("titulo") or "").strip()
     remixer = (track.get("remixer") or "").strip()
 
-    piezas = [p for p in (izquierda, titulo, remixer) if p]
+    piezas = [p for p in (artista, titulo, remixer) if p]
     return _nombre_seguro(" - ".join(piezas))

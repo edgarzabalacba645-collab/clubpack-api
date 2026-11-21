@@ -512,6 +512,67 @@ def extraer_caratula(ruta_mp3: Path) -> tuple[bytes, str] | None:
     return None
 
 
+# Ruta fija dentro de la imagen de Docker — ver app/assets/portada_generica.png
+# (renderizada desde public/portada-generica.svg del frontend; si ese SVG
+# cambia de diseño, hay que volver a renderizar y pisar este PNG a mano,
+# no se regeneran solos porque viven en repos separados).
+_RUTA_CARATULA_GENERICA = Path(__file__).parent / "assets" / "portada_generica.png"
+
+
+def fijar_caratula_generica(ruta_mp3: Path) -> None:
+    """
+    Reemplaza (o agrega) la carátula embebida (tag ID3 APIC) de un MP3
+    por la portada genérica de PLAYLIST, sacando cualquier carátula que
+    trajera el archivo original.
+
+    Se usa en /tracks/confirm cuando el usuario elige NO mantener la
+    carátula original (usar_caratula_original=False) — antes esa
+    elección solo cambiaba lo que se ve en el catálogo web
+    (tracks.portada_url), pero el archivo que se descarga seguía
+    trayendo tal cual la carátula vieja (a veces de otro servicio, mala
+    calidad), lo cual no coincidía con lo elegido al subir. Se hace
+    UNA sola vez acá, antes de subir el archivo a R2 — no en cada
+    descarga — para no sumarle trabajo al servidor gratuito de Render
+    por cada bajada (mismo motivo que zip_utils ya no arma ZIPs en el
+    backend, ver el comentario grande ahí).
+
+    Si algo falla (mutagen ausente, archivo raro) no tira excepción:
+    loguea y deja el archivo tal cual estaba — quien llama decide si
+    eso alcanza para no romper la subida (ver tracks.py, mismo patrón
+    que duplicados/carátula más arriba).
+    """
+    try:
+        from mutagen.id3 import APIC, ID3
+        from mutagen.mp3 import MP3
+    except ImportError:
+        logger.warning("mutagen no está instalado — no se puede fijar la carátula genérica.")
+        return
+
+    try:
+        imagen_bytes = _RUTA_CARATULA_GENERICA.read_bytes()
+    except OSError:
+        logger.exception("No se encontró %s — no se pudo fijar la carátula genérica.", _RUTA_CARATULA_GENERICA)
+        return
+
+    try:
+        audio_tags = MP3(ruta_mp3, ID3=ID3)
+        if audio_tags.tags is None:
+            audio_tags.add_tags()
+        audio_tags.tags.delall("APIC")  # saca cualquier carátula vieja (puede haber más de una)
+        audio_tags.tags.add(
+            APIC(
+                encoding=3,  # UTF-8
+                mime="image/png",
+                type=3,  # "Cover (front)"
+                desc="Cover",
+                data=imagen_bytes,
+            )
+        )
+        audio_tags.save(ruta_mp3, v2_version=3)
+    except Exception:
+        logger.exception("No se pudo fijar la carátula genérica en %s", ruta_mp3)
+
+
 def analizar_track(ruta_mp3: Path) -> dict:
     """
     Corre duración + BPM + tonalidad + fingerprint de una. Pensado para

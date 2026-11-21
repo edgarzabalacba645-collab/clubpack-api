@@ -246,6 +246,17 @@ def confirmar_subida(
     # El archivo temporal recién se borra al final, en el finally, una vez
     # que ya no hace falta para nada más (ni siquiera para la carátula).
     try:
+        # Si el usuario elige NO mantener la carátula original, se
+        # reemplaza acá, en el archivo en disco, ANTES de subirlo a R2 —
+        # así la descarga de verdad queda coherente con lo que el
+        # catálogo muestra (la portada genérica de PLAYLIST), en vez de
+        # arrastrar para siempre la carátula vieja del archivo original.
+        # Si algo sale mal acá no se corta la subida: el track se crea
+        # igual, solo que con la carátula que ya traía (ver
+        # audio.fijar_caratula_generica, que loguea y no tira excepción).
+        if not body.usar_caratula_original:
+            audio.fijar_caratula_generica(entrada.ruta_mp3)
+
         storage_path = storage.subir_archivo_desde_ruta(entrada.ruta_mp3, entrada.nombre_original)
 
         # Reusa el fingerprint que /tracks/analyze ya calculó para este

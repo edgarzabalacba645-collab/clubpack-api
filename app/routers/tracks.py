@@ -97,10 +97,23 @@ def procesar_y_dejar_en_espera(
 
     # Fingerprint primero (es el mismo audio posta, no solo texto parecido)
     # y de ahí se completa con los parecidos por texto, sin repetir ids.
-    dup_fingerprint = duplicados.chequear_fingerprint_similar(
-        usuario.client, analisis["fingerprint"], analisis["duracion_seg"]
-    )
-    dup_texto = duplicados.chequear_antes_de_subir(usuario.client, titulo, remixer) if titulo is not None else []
+    # Envuelto en try/except: esto es un AVISO (ver si ya existe algo
+    # parecido), no el propósito central de este endpoint — si algo
+    # inesperado falla acá (como el bug de tipos que rompía TODA subida
+    # real hasta ahora, ver chequear_fingerprint_similar), degrada con
+    # gracia a "no se encontraron duplicados" en vez de tirar abajo la
+    # subida entera, igual que ya se hace unas líneas más abajo con la
+    # carátula embebida.
+    try:
+        dup_fingerprint = duplicados.chequear_fingerprint_similar(
+            usuario.client, analisis["fingerprint"], analisis["duracion_seg"]
+        )
+    except Exception:
+        dup_fingerprint = []
+    try:
+        dup_texto = duplicados.chequear_antes_de_subir(usuario.client, titulo, remixer) if titulo is not None else []
+    except Exception:
+        dup_texto = []
     vistos = {d["id"] for d in dup_fingerprint}
     duplicados_sospechosos = dup_fingerprint + [d for d in dup_texto if d["id"] not in vistos]
 

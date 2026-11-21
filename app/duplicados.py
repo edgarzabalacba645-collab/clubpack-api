@@ -14,6 +14,8 @@ como el usuario que llama a la API en cada request), en vez de un
 `get_client()` global atado a st.session_state.
 """
 
+import math
+
 import numpy as np
 from supabase import Client
 from rapidfuzz import fuzz, process
@@ -240,12 +242,23 @@ def chequear_fingerprint_similar(
     if decodificado_nuevo is None:
         return []
 
+    # `duracion_seg` en la tabla es INTEGER, pero acá llega como float (la
+    # duración detectada del audio) — pasarle el float crudo a .gte()/.lte()
+    # termina mandando algo como "271.0" a PostgREST, que Postgres rechaza
+    # para una columna integer ("invalid input syntax for type integer:
+    # '271.0'"): un literal con punto decimal no es un integer válido aunque
+    # el valor entero coincida. Resultado real: CADA /tracks/analyze con un
+    # audio real (duración siempre fraccionaria) tiraba esta excepción sin
+    # capturar y la subida fallaba de punta a punta. floor/ceil en vez de
+    # int() para no angostar la ventana por truncar siempre hacia 0.
+    minimo = math.floor(duracion_seg - VENTANA_DURACION_SEG)
+    maximo = math.ceil(duracion_seg + VENTANA_DURACION_SEG)
     existentes = (
         client.table("tracks")
         .select("id, titulo, remixer, audio_fingerprint, duracion_seg")
         .eq("estado", "activo")
-        .gte("duracion_seg", duracion_seg - VENTANA_DURACION_SEG)
-        .lte("duracion_seg", duracion_seg + VENTANA_DURACION_SEG)
+        .gte("duracion_seg", minimo)
+        .lte("duracion_seg", maximo)
         .execute()
         .data
         or []

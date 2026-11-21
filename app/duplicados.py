@@ -320,7 +320,19 @@ def escanear_catalogo_completo(client: Client) -> dict:
     if len(textos) >= 2:
         # token_set_ratio — ver el comentario en chequear_antes_de_subir
         # sobre por qué (títulos que son uno el otro + algo extra).
-        matriz = process.cdist(textos, textos, scorer=fuzz.token_set_ratio, workers=-1)
+        #
+        # workers=1 (NO -1/"todos los cores"): en Render free tier el
+        # contenedor tiene una fracción de CPU (no un core entero), pero
+        # os.cpu_count() adentro del contenedor puede devolver un número
+        # más alto igual — pedirle a rapidfuzz "todos los cores" ahí
+        # dispara más hilos/procesos de los que esa fracción de CPU puede
+        # atender bien, y el sistema operativo los va frenando (CPU
+        # throttling), lo que puede tardar muchísimo más que resolverlo
+        # en un solo hilo. Con ~500 temas, de un solo hilo esto tarda
+        # bien poco (rapidfuzz ya es C++ optimizado) — no hace falta
+        # paralelizar, y sin este freno probablemente la causa del
+        # escaneo quedándose colgado no era la comparación de audio.
+        matriz = process.cdist(textos, textos, scorer=fuzz.token_set_ratio, workers=1)
 
         filas_texto = []
         vistos = set()

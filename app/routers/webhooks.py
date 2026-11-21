@@ -45,7 +45,7 @@ async def nuevo_registro(
 
     quien = f"{nombre_dj} ({email})" if nombre_dj and nombre_dj != email else email
     texto = (
-        f"🆕 <b>Nuevo registro en ClubPack</b>\n{quien}\n\n"
+        f"🆕 <b>Nuevo registro en PLAYLIST</b>\n{quien}\n\n"
         "Entrá al panel de Admin para activarle la suscripción."
     )
     telegram.enviar_mensaje(texto)

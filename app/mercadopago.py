@@ -46,7 +46,7 @@ def crear_preapproval(
     email: str | None,
     monto: float,
     moneda: str = "ARS",
-    razon: str = "Suscripción mensual ClubPack",
+    razon: str = "Suscripción mensual PLAYLIST",
 ) -> dict:
     """
     Crea una suscripción recurrente "sin plan asociado" (el usuario autoriza

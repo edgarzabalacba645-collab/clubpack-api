@@ -27,9 +27,9 @@ async def _ciclo_de_vida(app: FastAPI):
 
 
 app = FastAPI(
-    title="ClubPack API",
+    title="PLAYLIST API",
     description=(
-        "Backend de ClubPack: todo lo que necesita ffmpeg, librosa, fpcalc "
+        "Backend de PLAYLIST: todo lo que necesita ffmpeg, librosa, fpcalc "
         "o las claves de Cloudflare R2 — transcodificación, BPM, fingerprint, "
         "armado de ZIPs y escaneo de duplicados. El resto (login, catálogo, "
         "géneros, usuarios) lo maneja el frontend directo contra Supabase."

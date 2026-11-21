@@ -56,7 +56,7 @@ def crear_suscripcion_mp(usuario: UsuarioAutenticado = Depends(get_usuario_actua
             email=email,
             monto=float(precio),
             moneda=config.get("moneda") or "ARS",
-            razon=f"Suscripción mensual ClubPack — {perfil.get('nombre_dj') or email}",
+            razon=f"Suscripción mensual PLAYLIST — {perfil.get('nombre_dj') or email}",
         )
     except mercadopago.MercadoPagoError as e:
         logger.exception("Error creando preapproval en Mercado Pago")
@@ -91,7 +91,7 @@ def aviso_pago_manual(
     nombre_dj = perfil.get("nombre_dj")
     quien = f"{nombre_dj} ({email})" if nombre_dj and nombre_dj != email else email
 
-    texto = f"💸 <b>Aviso de transferencia en ClubPack</b>\n{quien}"
+    texto = f"💸 <b>Aviso de transferencia en PLAYLIST</b>\n{quien}"
     if body.comentario:
         texto += f"\n\n{body.comentario}"
     texto += "\n\nEntrá al panel de Admin, pestaña Pagos, para revisarlo y activarle la suscripción."

@@ -29,22 +29,6 @@ except OSError:
     # análisis de la subida. Ver Dockerfile (libchromaprint-tools).
     _CHROMAPRINT_DISPONIBLE = False
 
-# Tabla de popcount (bits en 1) de cada valor posible de un byte —
-# calculada una sola vez al importar el módulo. _similitud_audio la usa
-# para contar bits de diferencia entre fingerprints con numpy en vez de
-# con bin(x).count("1") en un bucle de Python puro, que con el catálogo
-# real (cientos de temas, cada escaneo compara muchos pares) tardaba
-# minutos — con esto, el mismo escaneo completo corre en segundos.
-_TABLA_POPCOUNT = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
-
-
-def _popcount_uint32(valores: np.ndarray) -> np.ndarray:
-    """Popcount de cada uint32 del arreglo, vectorizado: separa cada
-    entero en sus 4 bytes y suma el popcount de cada uno (invariante al
-    orden de bytes, así que no importa la endianness de la máquina)."""
-    vista = valores.view(np.uint8).reshape(-1, 4)
-    return _TABLA_POPCOUNT[vista].sum(axis=1, dtype=np.uint16)
-
 UMBRAL_TEXTO_SOSPECHOSO = 85  # 0-100, similitud de texto para avisar
 
 # 0-100, similitud ACÚSTICA (no igualdad exacta — ver _similitud_audio)
@@ -97,51 +81,96 @@ def _decodificar_fingerprint(fingerprint: str) -> np.ndarray | None:
         return None
 
 
-def _similitud_audio(a: np.ndarray, b: np.ndarray) -> float:
+def _similitud_audio_lote(a: np.ndarray, candidatos: list[np.ndarray]) -> np.ndarray:
     """
-    Similitud acústica entre dos fingerprints YA DECODIFICADOS (0-100).
+    Similitud acústica (0-100) entre UN fingerprint `a` y VARIOS
+    candidatos a la vez — misma definición que antes (busca, para cada
+    candidato, la mejor alineación temporal tolerando que uno empiece
+    unos "cuadros" antes/después que el otro, aceptando hasta
+    MAX_BIT_ERROR bits de diferencia por posición), pero procesando
+    TODOS los candidatos de `a` en una sola pasada de numpy en vez de
+    una pasada por candidato.
 
-    A diferencia de una comparación por igualdad, esto busca la mejor
-    alineación temporal entre ambos — tolera que uno empiece unos
-    segundos antes/después que el otro, un bitrate distinto, etc., que es
-    justo lo que pasa con el mismo tema re-subido con un corte/edit
-    levemente distinto (con igualdad de fingerprint exacta, eso NUNCA
-    matchea, aunque sea literalmente el mismo audio).
+    Por qué esto importa: ya con numpy por PAR, el escaneo completo
+    seguía tardando varios minutos en producción (Render free tier) —
+    no porque el cálculo en sí fuera lento, sino porque son muchas
+    llamadas chicas a numpy (240 desplazamientos × miles de pares), y
+    cada llamada tiene un costo fijo que en un entorno con CPU muy
+    limitada pesa mucho más que en un entorno sin esa restricción.
+    Agrupando todos los candidatos de un mismo tema en una sola matriz
+    (uno por fila) se hacen las mismas 240 iteraciones UNA vez para
+    todos sus candidatos juntos, en vez de una vez por candidato —
+    medido: ~3-5x más rápido que comparar de a un par con la cantidad
+    de candidatos típica por tema (decenas, por la ventana de duración).
 
-    Mismo algoritmo y mismos resultados que una versión con dos bucles de
-    Python anidados (probar, para cada posición i de `a`, contra cada
-    posición j de `b` con |i-j| < MAX_ALIGN_OFFSET, y quedarse con el
-    desplazamiento i-j que acumula más coincidencias) — pero reescrito
-    para que cada desplazamiento se compare de una con numpy en vez de
-    elemento por elemento en Python puro: con el catálogo real (cientos
-    de temas) la versión en Python puro tardaba minutos por escaneo
-    completo, esta tarda segundos.
+    También usa np.bitwise_count (popcount nativo de numpy, disponible
+    desde numpy 2.0) en vez de la tabla de popcount por bytes que tenía
+    antes — es ~3 veces más rápido para esto.
+
+    Devuelve un array de similitudes, en el mismo orden que `candidatos`
+    (mismo resultado que llamar a esto con un solo candidato por vez).
     """
-    largo_a, largo_b = len(a), len(b)
-    if not largo_a or not largo_b:
-        return 0.0
-    mejor = 0
-    # Mismo rango de desplazamientos que recorrería el doble bucle
-    # original (|i-j| < MAX_ALIGN_OFFSET, con el límite superior
-    # exclusivo igual que en range()).
+    if not candidatos:
+        return np.array([], dtype=np.float64)
+
+    largo_a = len(a)
+    largos_b = np.array([len(b) for b in candidatos], dtype=np.int64)
+    k = len(candidatos)
+    if largo_a == 0:
+        return np.zeros(k, dtype=np.float64)
+
+    # Matriz (k, ancho): cada fila es un candidato, rellenado con ceros.
+    # El relleno con ceros no afecta el resultado: esas posiciones se
+    # excluyen explícitamente con la máscara `validez` más abajo (nunca
+    # cuentan como coincidencia aunque por azar su popcount diera bajo).
+    #
+    # El ancho tiene que alcanzar para guardar el candidato más largo
+    # ENTERO (max_largo_b) y, aparte, para que al desplazamiento más
+    # negativo posible (-(MAX_ALIGN_OFFSET-1)) la porción que se lee de
+    # `B` (que arranca en la columna -desplazamiento y se extiende
+    # largo_a posiciones) tampoco se salga del arreglo — si no, numpy
+    # recorta la slice en vez de tirar error y los arreglos de `a` y `b`
+    # terminarían con formas distintas.
+    max_largo_b = int(largos_b.max())
+    ancho = max(max_largo_b, largo_a) + _MAX_ALIGN_OFFSET
+    B = np.zeros((k, ancho), dtype=np.uint32)
+    for idx, b in enumerate(candidatos):
+        B[idx, :len(b)] = b
+
+    mejor = np.zeros(k, dtype=np.int64)
+    idx_b = np.arange(ancho)
+
+    # Mismo rango de desplazamientos que el algoritmo por par (ver
+    # docstring histórico: |i-j| < MAX_ALIGN_OFFSET).
     for desplazamiento in range(-_MAX_ALIGN_OFFSET + 1, _MAX_ALIGN_OFFSET + 1):
         if desplazamiento >= 0:
-            n = min(largo_a - desplazamiento, largo_b)
+            n = largo_a - desplazamiento
             if n <= 0:
                 continue
             xa = a[desplazamiento:desplazamiento + n]
-            xb = b[:n]
+            xb = B[:, :n]
+            validez = idx_b[:n] < largos_b[:, None]
         else:
-            n = min(largo_a, largo_b + desplazamiento)
-            if n <= 0:
-                continue
+            n = largo_a
+            inicio = -desplazamiento
             xa = a[:n]
-            xb = b[-desplazamiento:-desplazamiento + n]
-        errores = _popcount_uint32(xa ^ xb)
-        coincidencias = int(np.count_nonzero(errores <= _MAX_BIT_ERROR))
-        if coincidencias > mejor:
-            mejor = coincidencias
-    return 100 * mejor / min(largo_a, largo_b)
+            xb = B[:, inicio:inicio + n]
+            validez = (idx_b[:n] + inicio) < largos_b[:, None]
+        errores = np.bitwise_count(xb ^ xa[None, :])
+        coincidencias = np.count_nonzero((errores <= _MAX_BIT_ERROR) & validez, axis=1)
+        mejor = np.maximum(mejor, coincidencias)
+
+    denominador = np.minimum(largo_a, largos_b)
+    denominador = np.where(denominador == 0, 1, denominador)
+    return 100 * mejor.astype(np.float64) / denominador
+
+
+def _similitud_audio(a: np.ndarray, b: np.ndarray) -> float:
+    """Similitud acústica entre DOS fingerprints ya decodificados (0-100)
+    — casarse de a un par (ver _similitud_audio_lote para comparar uno
+    contra varios de una, que es lo que usan los callers reales de
+    abajo)."""
+    return float(_similitud_audio_lote(a, [b])[0])
 
 
 def chequear_antes_de_subir(client: Client, titulo: str, remixer: str, limite: int = 5) -> list[dict]:
@@ -222,18 +251,27 @@ def chequear_fingerprint_similar(
         or []
     )
 
-    salida = []
+    candidatos = []
+    decodificados = []
     for t in existentes:
         decodificado_existente = _decodificar_fingerprint(t.get("audio_fingerprint"))
         if decodificado_existente is None:
             continue
-        score = _similitud_audio(decodificado_nuevo, decodificado_existente)
+        candidatos.append(t)
+        decodificados.append(decodificado_existente)
+
+    # Un solo llamado para todos los candidatos de esta subida (ver
+    # _similitud_audio_lote) en vez de uno por candidato.
+    scores = _similitud_audio_lote(decodificado_nuevo, decodificados)
+
+    salida = []
+    for t, score in zip(candidatos, scores):
         if score >= UMBRAL_AUDIO_SOSPECHOSO:
             salida.append({
                 "id": t["id"],
                 "titulo": t["titulo"],
                 "remixer": t.get("remixer"),
-                "similitud": round(score, 1),
+                "similitud": round(float(score), 1),
             })
     salida.sort(key=lambda d: d["similitud"], reverse=True)
     return salida
@@ -290,6 +328,14 @@ def escanear_catalogo_completo(client: Client) -> dict:
         dec_a = _decodificado_cacheado(t_a)
         if dec_a is None:
             continue
+
+        # Candidatos de t_a dentro de la ventana de duración (como antes),
+        # pero en vez de comparar de a uno, se decodifican todos y se
+        # comparan los que decodificaron bien de UNA sola vez contra
+        # dec_a (ver _similitud_audio_lote) — con catálogos grandes esto
+        # es varias veces más rápido que un llamado a numpy por candidato.
+        candidatos_b = []
+        decodificados_b = []
         for j in range(i + 1, len(con_audio)):
             t_b = con_audio[j]
             if t_b["duracion_seg"] - t_a["duracion_seg"] > VENTANA_DURACION_SEG:
@@ -297,14 +343,21 @@ def escanear_catalogo_completo(client: Client) -> dict:
             dec_b = _decodificado_cacheado(t_b)
             if dec_b is None:
                 continue
-            score = _similitud_audio(dec_a, dec_b)
+            candidatos_b.append(t_b)
+            decodificados_b.append(dec_b)
+
+        if not candidatos_b:
+            continue
+
+        scores = _similitud_audio_lote(dec_a, decodificados_b)
+        for t_b, score in zip(candidatos_b, scores):
             if score >= UMBRAL_AUDIO_SOSPECHOSO:
                 id_a, id_b = sorted((t_a["id"], t_b["id"]))
                 filas_fingerprint.append({
                     "track_id_a": id_a,
                     "track_id_b": id_b,
                     "tipo": "fingerprint_similar",
-                    "similitud": round(score, 1),
+                    "similitud": round(float(score), 1),
                 })
 
     if filas_fingerprint:

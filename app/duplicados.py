@@ -14,6 +14,7 @@ como el usuario que llama a la API en cada request), en vez de un
 `get_client()` global atado a st.session_state.
 """
 
+import numpy as np
 from supabase import Client
 from rapidfuzz import fuzz, process
 
@@ -27,6 +28,22 @@ except OSError:
     # no corre (el de texto sigue andando) en vez de romper todo el
     # análisis de la subida. Ver Dockerfile (libchromaprint-tools).
     _CHROMAPRINT_DISPONIBLE = False
+
+# Tabla de popcount (bits en 1) de cada valor posible de un byte —
+# calculada una sola vez al importar el módulo. _similitud_audio la usa
+# para contar bits de diferencia entre fingerprints con numpy en vez de
+# con bin(x).count("1") en un bucle de Python puro, que con el catálogo
+# real (cientos de temas, cada escaneo compara muchos pares) tardaba
+# minutos — con esto, el mismo escaneo completo corre en segundos.
+_TABLA_POPCOUNT = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
+
+
+def _popcount_uint32(valores: np.ndarray) -> np.ndarray:
+    """Popcount de cada uint32 del arreglo, vectorizado: separa cada
+    entero en sus 4 bytes y suma el popcount de cada uno (invariante al
+    orden de bytes, así que no importa la endianness de la máquina)."""
+    vista = valores.view(np.uint8).reshape(-1, 4)
+    return _TABLA_POPCOUNT[vista].sum(axis=1, dtype=np.uint16)
 
 UMBRAL_TEXTO_SOSPECHOSO = 85  # 0-100, similitud de texto para avisar
 
@@ -62,10 +79,11 @@ def _texto_comparable(titulo: str, remixer: str | None) -> str:
     return f"{titulo} {remixer or ''}".strip().lower()
 
 
-def _decodificar_fingerprint(fingerprint: str) -> list[int] | None:
+def _decodificar_fingerprint(fingerprint: str) -> np.ndarray | None:
     """
     Descomprime el fingerprint (tal cual lo guarda fpcalc en
-    audio_fingerprint) a su arreglo de enteros original, para poder
+    audio_fingerprint) a su arreglo de enteros original (como arreglo de
+    numpy, para que _similitud_audio pueda compararlo rápido), para poder
     compararlo por similitud en vez de por igualdad de texto. None si
     falta la librería de chromaprint o el texto no se pudo decodificar
     (fingerprint corrupto o de un formato viejo).
@@ -74,12 +92,12 @@ def _decodificar_fingerprint(fingerprint: str) -> list[int] | None:
         return None
     try:
         arreglo, _version = chromaprint.decode_fingerprint(fingerprint.encode("utf-8"))
-        return list(arreglo)
+        return np.array(arreglo, dtype=np.uint32)
     except Exception:
         return None
 
 
-def _similitud_audio(a: list[int], b: list[int]) -> float:
+def _similitud_audio(a: np.ndarray, b: np.ndarray) -> float:
     """
     Similitud acústica entre dos fingerprints YA DECODIFICADOS (0-100).
 
@@ -89,20 +107,40 @@ def _similitud_audio(a: list[int], b: list[int]) -> float:
     justo lo que pasa con el mismo tema re-subido con un corte/edit
     levemente distinto (con igualdad de fingerprint exacta, eso NUNCA
     matchea, aunque sea literalmente el mismo audio).
+
+    Mismo algoritmo y mismos resultados que una versión con dos bucles de
+    Python anidados (probar, para cada posición i de `a`, contra cada
+    posición j de `b` con |i-j| < MAX_ALIGN_OFFSET, y quedarse con el
+    desplazamiento i-j que acumula más coincidencias) — pero reescrito
+    para que cada desplazamiento se compare de una con numpy en vez de
+    elemento por elemento en Python puro: con el catálogo real (cientos
+    de temas) la versión en Python puro tardaba minutos por escaneo
+    completo, esta tarda segundos.
     """
     largo_a, largo_b = len(a), len(b)
     if not largo_a or not largo_b:
         return 0.0
-    conteos: dict[int, int] = {}
-    for i in range(largo_a):
-        j_desde = max(0, i - _MAX_ALIGN_OFFSET)
-        j_hasta = min(largo_b, i + _MAX_ALIGN_OFFSET)
-        for j in range(j_desde, j_hasta):
-            error_bits = bin(a[i] ^ b[j]).count("1")
-            if error_bits <= _MAX_BIT_ERROR:
-                desplazamiento = i - j
-                conteos[desplazamiento] = conteos.get(desplazamiento, 0) + 1
-    mejor = max(conteos.values(), default=0)
+    mejor = 0
+    # Mismo rango de desplazamientos que recorrería el doble bucle
+    # original (|i-j| < MAX_ALIGN_OFFSET, con el límite superior
+    # exclusivo igual que en range()).
+    for desplazamiento in range(-_MAX_ALIGN_OFFSET + 1, _MAX_ALIGN_OFFSET + 1):
+        if desplazamiento >= 0:
+            n = min(largo_a - desplazamiento, largo_b)
+            if n <= 0:
+                continue
+            xa = a[desplazamiento:desplazamiento + n]
+            xb = b[:n]
+        else:
+            n = min(largo_a, largo_b + desplazamiento)
+            if n <= 0:
+                continue
+            xa = a[:n]
+            xb = b[-desplazamiento:-desplazamiento + n]
+        errores = _popcount_uint32(xa ^ xb)
+        coincidencias = int(np.count_nonzero(errores <= _MAX_BIT_ERROR))
+        if coincidencias > mejor:
+            mejor = coincidencias
     return 100 * mejor / min(largo_a, largo_b)
 
 

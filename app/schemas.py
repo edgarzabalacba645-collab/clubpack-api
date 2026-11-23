@@ -13,6 +13,9 @@ class DuplicadoCandidato(BaseModel):
     # join con generos(nombre)).
     artista_original: str | None = None
     genero: str | None = None
+    # También a pedido de Edgar: la duración es otro dato que ayuda a
+    # confirmar si es el mismo tema real (ver duplicados.py).
+    duracion_seg: int | None = None
     similitud: float
 
 

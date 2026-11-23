@@ -189,7 +189,9 @@ def chequear_antes_de_subir(client: Client, titulo: str, remixer: str, limite: i
         # se usa más abajo en listar_duplicados_pendientes (y en el
         # frontend, contra Supabase directo) para resolver una FK a su
         # nombre sin una consulta aparte.
-        .select("id, titulo, remixer, artista_original, generos(nombre)")
+        # duracion_seg: también a pedido de Edgar, para comparar la
+        # duración además de Artista/Remixer/Género.
+        .select("id, titulo, remixer, artista_original, generos(nombre), duracion_seg")
         .eq("estado", "activo")
         .execute()
         .data
@@ -311,6 +313,7 @@ def chequear_fingerprint_similar(
                 "remixer": t.get("remixer"),
                 "artista_original": t.get("artista_original"),
                 "genero": generos_embebido.get("nombre"),
+                "duracion_seg": t.get("duracion_seg"),
                 "similitud": round(float(score), 1),
             })
     salida.sort(key=lambda d: d["similitud"], reverse=True)

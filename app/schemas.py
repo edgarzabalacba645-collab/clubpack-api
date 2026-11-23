@@ -7,6 +7,12 @@ class DuplicadoCandidato(BaseModel):
     id: str
     titulo: str
     remixer: str | None = None
+    # artista_original y genero: a pedido de Edgar, para juzgar mejor si
+    # un candidato es un duplicado real o no (ver duplicados.py, que es
+    # donde se arman estos dos campos a partir de artista_original y del
+    # join con generos(nombre)).
+    artista_original: str | None = None
+    genero: str | None = None
     similitud: float
 
 

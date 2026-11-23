@@ -183,7 +183,13 @@ def chequear_antes_de_subir(client: Client, titulo: str, remixer: str, limite: i
     """
     existentes = (
         client.table("tracks")
-        .select("id, titulo, remixer")
+        # artista_original y generos(nombre): a pedido de Edgar, para que
+        # el candidato de duplicado muestre Artista y Género además de
+        # Remixer — generos(nombre) es el mismo embed de PostgREST que ya
+        # se usa más abajo en listar_duplicados_pendientes (y en el
+        # frontend, contra Supabase directo) para resolver una FK a su
+        # nombre sin una consulta aparte.
+        .select("id, titulo, remixer, artista_original, generos(nombre)")
         .eq("estado", "activo")
         .execute()
         .data
@@ -191,6 +197,16 @@ def chequear_antes_de_subir(client: Client, titulo: str, remixer: str, limite: i
     )
     if not existentes:
         return []
+
+    # PostgREST devuelve el embed como {"generos": {"nombre": "..."} o
+    # None} — se aplana a un campo "genero" (string) ACÁ MISMO, antes de
+    # armar nada más, así el resto de la función (y el auto-spread de
+    # abajo que arma la salida final) no tiene que saber nada sobre el
+    # formato de embeds de PostgREST, y el dict queda con la misma forma
+    # que espera el schema DuplicadoCandidato.
+    for t in existentes:
+        generos_embebido = t.pop("generos", None)
+        t["genero"] = (generos_embebido or {}).get("nombre")
 
     objetivo = _texto_comparable(titulo, remixer)
     candidatos = {
@@ -255,7 +271,10 @@ def chequear_fingerprint_similar(
     maximo = math.ceil(duracion_seg + VENTANA_DURACION_SEG)
     existentes = (
         client.table("tracks")
-        .select("id, titulo, remixer, audio_fingerprint, duracion_seg")
+        # artista_original y generos(nombre): mismo agregado que en
+        # chequear_antes_de_subir, y por el mismo motivo (Artista y
+        # Género al lado de Remixer en los candidatos de duplicado).
+        .select("id, titulo, remixer, artista_original, generos(nombre), audio_fingerprint, duracion_seg")
         .eq("estado", "activo")
         .gte("duracion_seg", minimo)
         .lte("duracion_seg", maximo)
@@ -280,10 +299,18 @@ def chequear_fingerprint_similar(
     salida = []
     for t, score in zip(candidatos, scores):
         if score >= UMBRAL_AUDIO_SOSPECHOSO:
+            # Esta función arma el dict de salida campo por campo (a
+            # diferencia de chequear_antes_de_subir, que hace
+            # {**por_id[track_id], ...}) — por eso artista_original y
+            # genero se agregan explícitamente acá, no alcanza con
+            # haberlos pedido en el .select() de arriba.
+            generos_embebido = t.get("generos") or {}
             salida.append({
                 "id": t["id"],
                 "titulo": t["titulo"],
                 "remixer": t.get("remixer"),
+                "artista_original": t.get("artista_original"),
+                "genero": generos_embebido.get("nombre"),
                 "similitud": round(float(score), 1),
             })
     salida.sort(key=lambda d: d["similitud"], reverse=True)

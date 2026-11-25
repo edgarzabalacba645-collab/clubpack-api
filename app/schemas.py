@@ -144,6 +144,14 @@ class ImagenSubidaResponse(BaseModel):
     path: str
 
 
+class CrearSuscripcionMPRequest(BaseModel):
+    # Qué licencia quiere pagar (ver sql/022_precios_por_licencia.sql —
+    # ahora hay un precio distinto para cada una). Default "dj" por
+    # compatibilidad con un frontend viejo que todavía no mande este
+    # campo, pero el frontend actual siempre lo manda explícito.
+    tipo_licencia: Literal["simple", "dj"] = "dj"
+
+
 class CrearSuscripcionMPResponse(BaseModel):
     preapproval_id: str
     init_point: str
@@ -152,3 +160,10 @@ class CrearSuscripcionMPResponse(BaseModel):
 
 class AvisoPagoManualRequest(BaseModel):
     comentario: str | None = None
+    # Licencia que el usuario eligió en la página de Suscripción justo
+    # antes de avisar la transferencia — se incluye en el texto de
+    # Telegram para que el admin sepa qué activar sin tener que entrar
+    # al panel primero. El valor real "pedido" ya quedó guardado en
+    # perfiles.tipo_licencia_solicitada por el propio frontend (update
+    # directo a Supabase); esto es solo para el texto del aviso.
+    tipo_licencia: Literal["simple", "dj"] | None = None

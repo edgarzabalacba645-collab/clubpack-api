@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from .. import deps, mercadopago, telegram
 from ..config import settings
 from ..deps import UsuarioAutenticado, get_usuario_actual
-from ..schemas import AvisoPagoManualRequest, CrearSuscripcionMPResponse
+from ..schemas import AvisoPagoManualRequest, CrearSuscripcionMPRequest, CrearSuscripcionMPResponse
 
 router = APIRouter(prefix="/suscripcion", tags=["suscripcion"])
 logger = logging.getLogger("clubpack.suscripcion")
@@ -20,7 +20,10 @@ _ESTADO_MP_A_INTERNO = {
 
 
 @router.post("/mercadopago/crear", response_model=CrearSuscripcionMPResponse)
-def crear_suscripcion_mp(usuario: UsuarioAutenticado = Depends(get_usuario_actual)):
+def crear_suscripcion_mp(
+    body: CrearSuscripcionMPRequest,
+    usuario: UsuarioAutenticado = Depends(get_usuario_actual),
+):
     """
     Crea la suscripción recurrente en Mercado Pago para el usuario logueado
     y devuelve el link de autorización (`init_point`), que el frontend usa
@@ -40,9 +43,12 @@ def crear_suscripcion_mp(usuario: UsuarioAutenticado = Depends(get_usuario_actua
             status_code=400,
             detail="El pago con Mercado Pago no está habilitado. Usá transferencia manual o avisale a un admin.",
         )
-    precio = config.get("precio_mensual") or 0
+    # Un precio por tipo de licencia desde sql/022_precios_por_licencia.sql
+    # (antes había uno solo, "precio_mensual", para toda la plataforma).
+    campo_precio = "precio_mensual_dj" if body.tipo_licencia == "dj" else "precio_mensual_simple"
+    precio = config.get(campo_precio) or 0
     if precio <= 0:
-        raise HTTPException(status_code=400, detail="Todavía no se configuró el precio de la suscripción.")
+        raise HTTPException(status_code=400, detail="Todavía no se configuró el precio de esa licencia.")
 
     perfil_resp = (
         usuario.client.table("perfiles").select("email, nombre_dj").eq("id", usuario.user_id).single().execute()
@@ -50,13 +56,14 @@ def crear_suscripcion_mp(usuario: UsuarioAutenticado = Depends(get_usuario_actua
     perfil = perfil_resp.data or {}
     email = perfil.get("email")
 
+    etiqueta_licencia = "DJ" if body.tipo_licencia == "dj" else "Simple"
     try:
         resultado = mercadopago.crear_preapproval(
             usuario_id=usuario.user_id,
             email=email,
             monto=float(precio),
             moneda=config.get("moneda") or "ARS",
-            razon=f"Suscripción mensual PLAYLIST — {perfil.get('nombre_dj') or email}",
+            razon=f"Suscripción mensual PLAYLIST (licencia {etiqueta_licencia}) — {perfil.get('nombre_dj') or email}",
         )
     except mercadopago.MercadoPagoError as e:
         logger.exception("Error creando preapproval en Mercado Pago")
@@ -92,9 +99,11 @@ def aviso_pago_manual(
     quien = f"{nombre_dj} ({email})" if nombre_dj and nombre_dj != email else email
 
     texto = f"💸 <b>Aviso de transferencia en PLAYLIST</b>\n{quien}"
+    if body.tipo_licencia:
+        texto += f"\nLicencia pedida: {'DJ' if body.tipo_licencia == 'dj' else 'Simple'}"
     if body.comentario:
         texto += f"\n\n{body.comentario}"
-    texto += "\n\nEntrá al panel de Admin, pestaña Pagos, para revisarlo y activarle la suscripción."
+    texto += "\n\nEntrá al panel de Admin, pestaña Suscripción, para revisarlo y activarle la suscripción."
 
     telegram.enviar_mensaje(texto)
     return {"ok": True}

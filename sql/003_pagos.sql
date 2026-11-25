@@ -159,7 +159,14 @@ create or replace function public.procesar_notificacion_mp(
 )
 returns void
 language plpgsql
-security definer set search_path = public
+-- "extensions" hace falta para encontrar digest() (pgcrypto vive ahí
+-- en Supabase, no en public) — bug latente encontrado recién al
+-- escribir 021_notificaciones_push.sql (mismo chequeo de secreto,
+-- mismo digest()): sin esto esta función explota con "function
+-- digest(text, unknown) does not exist" apenas se la llama de verdad,
+-- algo que todavía no había pasado porque el webhook de Mercado Pago
+-- no se había probado end-to-end (ver tarea #53).
+security definer set search_path = public, extensions
 as $$
 declare
     v_hash_guardado text;

@@ -205,7 +205,10 @@ create or replace function public.obtener_suscripciones_push_de(
 )
 returns table(usuario_id uuid, endpoint text, p256dh text, auth text)
 language plpgsql
-security definer set search_path = public
+-- "extensions" hace falta para encontrar digest() (pgcrypto vive ahí
+-- en Supabase, no en public) — sin esto la función explota con
+-- "function digest(text, unknown) does not exist" apenas se la llama.
+security definer set search_path = public, extensions
 as $$
 declare
     v_hash_guardado text;
@@ -241,7 +244,7 @@ create or replace function public.borrar_suscripcion_push(
 )
 returns void
 language plpgsql
-security definer set search_path = public
+security definer set search_path = public, extensions
 as $$
 declare
     v_hash_guardado text;

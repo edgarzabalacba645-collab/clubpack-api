@@ -638,10 +638,15 @@ def borrar_track(
     R2 necesita las credenciales del bucket, que el frontend nunca tiene.
     Deja el registro en la tabla (estado='eliminado') en vez de un delete
     duro, para no perder el historial de descargas/duplicados asociado.
+
+    Borra de R2 tanto el audio como, si tenía, la portada propia (key
+    "portadas/{id}.ext" — ver /tracks POST) — antes solo se borraba el
+    audio y la portada quedaba huérfana en el bucket ocupando lugar para
+    siempre, sin ningún track que la referenciara.
     """
     resp = (
         usuario.client.table("tracks")
-        .select("id, storage_path")
+        .select("id, storage_path, portada_url")
         .eq("id", track_id)
         .maybe_single()
         .execute()
@@ -656,6 +661,12 @@ def borrar_track(
         # Si el archivo ya no estaba en R2 (o el bucket falla transitoriamente),
         # igual queremos sacar el track del catálogo — no bloqueamos por esto.
         logger.exception("No se pudo borrar de R2 el archivo del track %s", track_id)
+
+    if track.get("portada_url"):
+        try:
+            storage.borrar_archivo(track["portada_url"])
+        except Exception:
+            logger.exception("No se pudo borrar de R2 la portada del track %s", track_id)
 
     usuario.client.table("tracks").update({"estado": "eliminado"}).eq("id", track_id).execute()
     return {"ok": True}

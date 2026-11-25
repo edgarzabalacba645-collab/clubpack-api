@@ -167,3 +167,13 @@ class AvisoPagoManualRequest(BaseModel):
     # perfiles.tipo_licencia_solicitada por el propio frontend (update
     # directo a Supabase); esto es solo para el texto del aviso.
     tipo_licencia: Literal["simple", "dj"] | None = None
+
+
+class PedidoCambioLicenciaRequest(BaseModel):
+    """Para un suscriptor YA activo que quiere pasar de licencia (Simple↔DJ)
+    sin que medie un pago nuevo en el momento — ver /suscripcion/pedir-cambio-licencia.
+    Igual que en AvisoPagoManualRequest, el valor pedido ya quedó guardado en
+    perfiles.tipo_licencia_solicitada por el frontend; esto es solo el texto del aviso."""
+
+    tipo_licencia: Literal["simple", "dj"]
+    comentario: str | None = None

@@ -4,8 +4,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import deps, mercadopago, telegram
 from ..config import settings
-from ..deps import UsuarioAutenticado, get_usuario_actual
-from ..schemas import AvisoPagoManualRequest, CrearSuscripcionMPRequest, CrearSuscripcionMPResponse
+from ..deps import UsuarioAutenticado, get_usuario_actual, requiere_acceso_activo
+from ..schemas import (
+    AvisoPagoManualRequest,
+    CrearSuscripcionMPRequest,
+    CrearSuscripcionMPResponse,
+    PedidoCambioLicenciaRequest,
+)
 
 router = APIRouter(prefix="/suscripcion", tags=["suscripcion"])
 logger = logging.getLogger("clubpack.suscripcion")
@@ -104,6 +109,48 @@ def aviso_pago_manual(
     if body.comentario:
         texto += f"\n\n{body.comentario}"
     texto += "\n\nEntrá al panel de Admin, pestaña Suscripción, para revisarlo y activarle la suscripción."
+
+    telegram.enviar_mensaje(texto)
+    return {"ok": True}
+
+
+@router.post("/pedir-cambio-licencia")
+def pedir_cambio_licencia(
+    body: PedidoCambioLicenciaRequest,
+    usuario: UsuarioAutenticado = Depends(requiere_acceso_activo),
+):
+    """
+    Para un suscriptor que YA está activo y quiere pasar de licencia
+    (Simple↔DJ) sin que medie un pago nuevo en el momento — distinto de
+    /aviso-manual, que es para avisar una transferencia (y que no exige
+    suscripción activa, porque sirve justo para el primer pago). Igual que
+    ese endpoint, este no escribe nada en la base: el valor pedido ya
+    quedó guardado en perfiles.tipo_licencia_solicitada por el frontend
+    (update directo a Supabase); acá solo se manda el aviso a Telegram
+    para que el admin se entere y coordine el cambio (en Admin >
+    Usuarios), sin depender de que haya un pago pendiente para notarlo.
+    """
+    perfil_resp = (
+        usuario.client.table("perfiles")
+        .select("email, nombre_dj, tipo_licencia")
+        .eq("id", usuario.user_id)
+        .single()
+        .execute()
+    )
+    perfil = perfil_resp.data or {}
+    email = perfil.get("email") or "(sin email)"
+    nombre_dj = perfil.get("nombre_dj")
+    quien = f"{nombre_dj} ({email})" if nombre_dj and nombre_dj != email else email
+    actual = "DJ" if perfil.get("tipo_licencia") == "dj" else "Simple"
+    pedida = "DJ" if body.tipo_licencia == "dj" else "Simple"
+
+    texto = (
+        f"🔄 <b>Pedido de cambio de licencia en PLAYLIST</b>\n{quien}"
+        f"\nActual: {actual} → Pedida: {pedida}"
+    )
+    if body.comentario:
+        texto += f"\n\n{body.comentario}"
+    texto += "\n\nEntrá al panel de Admin, pestaña Usuarios, para cambiarle la licencia."
 
     telegram.enviar_mensaje(texto)
     return {"ok": True}

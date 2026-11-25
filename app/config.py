@@ -78,6 +78,28 @@ class Settings:
     # Tamaño máximo de imagen aceptada (portadas de track, herramientas DJ).
     MAX_IMAGEN_MB = int(_env("MAX_IMAGEN_MB", "8"))
 
+    # --- Web Push: notificación real al celular cuando te arroban (@) en el chat ---
+    # VAPID_PRIVATE_KEY / VAPID_PUBLIC_KEY: par de claves EC P-256 en
+    # formato "raw" base64url (no PEM) — se generan UNA sola vez con
+    # Python (py_vapid) y no tienen que volver a cambiar; si cambian,
+    # todas las suscripciones ya guardadas quedan inválidas. La pública
+    # también la necesita el frontend (VITE_VAPID_PUBLIC_KEY, mismo
+    # valor exacto) para pedir la suscripción del navegador.
+    VAPID_PRIVATE_KEY = _env("VAPID_PRIVATE_KEY")
+    VAPID_PUBLIC_KEY = _env("VAPID_PUBLIC_KEY")
+    # "sub" del JWT de VAPID — identifica quién manda la notificación
+    # ante el servicio de push (Google/Mozilla/etc). Puede ser un
+    # mailto: o, como acá, la URL del sitio.
+    VAPID_SUBJECT = _env("VAPID_SUBJECT", "https://clubpack-web.edgarzabalacba645.workers.dev")
+
+    # Secreto compartido solo con el trigger notificar_mencion_chat()
+    # (ver sql/021_notificaciones_push.sql, guardado ahí en Vault) —
+    # generado con `openssl rand -hex 32`. A diferencia de
+    # BACKEND_INTERNAL_SECRET (que viaja Backend -> Postgres), este va
+    # en sentido contrario: Postgres llama a ESTE backend, por eso acá
+    # sí hace falta el valor en texto plano en vez de un hash.
+    MENCION_WEBHOOK_SECRET = _env("MENCION_WEBHOOK_SECRET")
+
     # --- Balance de uso de Cloudflare R2 (panel de Admin) ---
     # Token de Cloudflare APARTE de las credenciales de R2 de arriba — esas
     # son para subir/bajar archivos (API compatible con S3), esta es para

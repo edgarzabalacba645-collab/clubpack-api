@@ -8,7 +8,7 @@ import logging
 
 from fastapi import APIRouter, Header, HTTPException, Request
 
-from .. import telegram
+from .. import deps, push, telegram
 from ..config import settings
 
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -51,3 +51,61 @@ async def nuevo_registro(
     telegram.enviar_mensaje(texto)
 
     return {"ok": True}
+
+
+@router.post("/mencion-chat")
+async def mencion_chat(
+    request: Request,
+    x_webhook_secret: str | None = Header(default=None),
+):
+    """
+    Lo llama el trigger notificar_mencion_chat() de Postgres (ver
+    sql/021_notificaciones_push.sql), apenas se inserta un mensaje de
+    chat con el array `menciones` no vacío — con el texto del mensaje
+    y el nombre del autor ya resueltos ahí mismo, para no tener que
+    leer nada más por acá.
+
+    Igual que /webhooks/nuevo-registro: quien llama no es un usuario
+    logueado de la app (es Postgres), así que no hay Authorization:
+    Bearer — el secreto va en un header propio.
+    """
+    if not settings.MENCION_WEBHOOK_SECRET or x_webhook_secret != settings.MENCION_WEBHOOK_SECRET:
+        raise HTTPException(status_code=401, detail="Secreto inválido")
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    menciones = body.get("menciones") or []
+    if not menciones:
+        return {"ok": True, "enviados": 0}
+
+    autor_nombre = body.get("autor_nombre") or "Alguien"
+    texto = (body.get("texto") or "").strip()
+    preview = texto if len(texto) <= 120 else texto[:117] + "…"
+
+    if not settings.BACKEND_INTERNAL_SECRET:
+        logger.error("Falta BACKEND_INTERNAL_SECRET — no se pueden buscar las suscripciones push.")
+        return {"ok": False, "enviados": 0}
+
+    cliente = deps.cliente_para_webhook()
+    try:
+        resp = cliente.rpc(
+            "obtener_suscripciones_push_de",
+            {"p_secret": settings.BACKEND_INTERNAL_SECRET, "p_usuario_ids": menciones},
+        ).execute()
+    except Exception:
+        logger.exception("No se pudieron buscar las suscripciones push de %s", menciones)
+        return {"ok": False, "enviados": 0}
+
+    enviados = 0
+    for fila in resp.data or []:
+        if push.enviar(
+            fila,
+            titulo=f"{autor_nombre} te mencionó en el chat",
+            cuerpo=preview or "🎵 Audio compartido",
+        ):
+            enviados += 1
+
+    return {"ok": True, "enviados": enviados}

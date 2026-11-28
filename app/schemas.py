@@ -73,6 +73,7 @@ class TrackOut(BaseModel):
     fecha_subida: str
     estado: str
     portada_url: str | None = None
+    loudness_lufs: float | None = None
 
 
 class DescargaUrlResponse(BaseModel):
@@ -103,6 +104,15 @@ class TrackPendientePortada(BaseModel):
 
 class PendientesPortadaResponse(BaseModel):
     tracks: list[TrackPendientePortada]
+
+
+class TrackPendienteVolumen(BaseModel):
+    id: str
+    titulo: str
+
+
+class PendientesVolumenResponse(BaseModel):
+    tracks: list[TrackPendienteVolumen]
 
 
 class ArchivoDescarga(BaseModel):

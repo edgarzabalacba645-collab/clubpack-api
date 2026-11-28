@@ -24,6 +24,7 @@ from ..schemas import (
     DuplicadoCandidato,
     PendientesPeaksResponse,
     PendientesPortadaResponse,
+    PendientesVolumenResponse,
     TrackOut,
     ZipRequest,
 )
@@ -83,7 +84,7 @@ def procesar_y_dejar_en_espera(
     """
     advertencias: list[str] = []
     try:
-        ruta_mp3, aviso = audio.transcodificar_a_mp3_320(ruta_subida, tmp_dir / "convertido.mp3")
+        ruta_mp3, aviso, nivelado = audio.transcodificar_a_mp3_320(ruta_subida, tmp_dir / "convertido.mp3")
     except RuntimeError as e:
         raise HTTPException(status_code=422, detail=str(e))
     if aviso:
@@ -143,7 +144,7 @@ def procesar_y_dejar_en_espera(
 
     tamano_mb = round(ruta_mp3.stat().st_size / (1024 * 1024), 2)
     staging_id = staging.guardar(
-        ruta_mp3, nombre_original, usuario.user_id, fingerprint=analisis["fingerprint"]
+        ruta_mp3, nombre_original, usuario.user_id, fingerprint=analisis["fingerprint"], nivelado=nivelado
     )
 
     return AnalisisTrackResponse(
@@ -297,6 +298,12 @@ def confirmar_subida(
             "subido_por": usuario.user_id,
             "audio_fingerprint": fingerprint,
             "peaks": peaks,
+            # Ver sql/023_nivelado_volumen.sql — NULL si por algo no se
+            # pudo nivelar el volumen de este archivo en particular
+            # (entrada.nivelado en False: ver audio.transcodificar_a_mp3_320),
+            # para que quede como candidato al backfill de admin en vez
+            # de mentir que ya está nivelado.
+            "loudness_lufs": audio.LOUDNORM_I if entrada.nivelado else None,
         }
 
         try:
@@ -623,6 +630,104 @@ def fijar_portada_generica_track(
             raise HTTPException(status_code=502, detail=f"No se pudo volver a subir el audio a R2: {e}")
 
         return {"ok": True}
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@router.get("/admin/pendientes-volumen", response_model=PendientesVolumenResponse)
+def listar_pendientes_volumen(usuario: UsuarioAutenticado = Depends(requiere_admin)):
+    """
+    Temas activos subidos antes de que existiera el nivelado de volumen
+    (ver audio.py::transcodificar_a_mp3_320 / sql/023_nivelado_volumen.sql)
+    — loudness_lufs null. AdminPage los lista y llama a
+    /tracks/{id}/nivelar-volumen uno por vez para ir resolviendo el
+    backfill, mismo patrón que los pendientes de peaks/portada de más
+    arriba (de a uno, no en paralelo, para no competir por memoria en el
+    plan gratis de Render con ffmpeg corriendo varias veces junto).
+    """
+    resp = (
+        usuario.client.table("tracks")
+        .select("id, titulo")
+        .is_("loudness_lufs", "null")
+        .eq("estado", "activo")
+        .order("fecha_subida", desc=False)
+        .execute()
+    )
+    return PendientesVolumenResponse(tracks=resp.data or [])
+
+
+@router.post("/{track_id}/nivelar-volumen", response_model=TrackOut)
+def nivelar_volumen_track(
+    track_id: str,
+    usuario: UsuarioAutenticado = Depends(requiere_admin),
+):
+    """
+    Backfill de UN track ya subido a R2 antes de que existiera el
+    nivelado de volumen: lo baja a disco (nunca a memoria completa — ver
+    storage.descargar_a_archivo), lo vuelve a pasar por el mismo
+    pipeline de conversión+nivelado que usan los temas nuevos
+    (audio.transcodificar_a_mp3_320), y lo vuelve a subir a la MISMA key
+    en R2 (storage.subir_archivo_desde_ruta_reemplazando — el
+    storage_path guardado en la tabla no cambia).
+
+    A diferencia de los backfills de peaks/portada de más arriba, acá SÍ
+    hay una pérdida de calidad chica e inevitable: nivelar el volumen
+    implica reencodear el audio entero (MP3 320 → PCM → MP3 320 de
+    nuevo), no es un cambio de metadata nada más. Para MP3, una segunda
+    pasada de lossy a 320kbps es una pérdida muy menor, normalmente
+    inaudible — el mismo costo que ya se paga siempre que alguien sube
+    un archivo que no es MP3 (se transcodifica al menos una vez).
+
+    Si no se pudo medir el volumen del archivo (silencioso o corrupto),
+    no se toca ni se sube nada — se avisa en vez de dejar el track con
+    un loudness_lufs que no corresponde a la realidad.
+    """
+    resp = (
+        usuario.client.table("tracks")
+        .select("id, storage_path")
+        .eq("id", track_id)
+        .maybe_single()
+        .execute()
+    )
+    track = resp.data
+    if not track:
+        raise HTTPException(status_code=404, detail="Track no encontrado.")
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="clubpack_volumen_"))
+    try:
+        ruta_original = tmp_dir / "original.mp3"
+        ruta_nivelada = tmp_dir / "nivelado.mp3"
+        try:
+            storage.descargar_a_archivo(track["storage_path"], ruta_original)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"No se pudo bajar el audio de R2: {e}")
+
+        try:
+            ruta_final, _aviso, nivelado = audio.transcodificar_a_mp3_320(ruta_original, ruta_nivelada)
+        except RuntimeError as e:
+            raise HTTPException(status_code=422, detail=f"No se pudo nivelar el volumen: {e}")
+
+        if not nivelado:
+            raise HTTPException(
+                status_code=422,
+                detail="No se pudo medir el volumen de este track (¿archivo silencioso o corrupto?) — no se tocó.",
+            )
+
+        try:
+            storage.subir_archivo_desde_ruta_reemplazando(ruta_final, track["storage_path"])
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"No se pudo volver a subir el audio nivelado a R2: {e}")
+
+        resp2 = (
+            usuario.client.table("tracks")
+            .update({"loudness_lufs": audio.LOUDNORM_I})
+            .eq("id", track_id)
+            .execute()
+        )
+        if not resp2.data:
+            raise HTTPException(status_code=400, detail="No se pudo guardar el volumen nivelado.")
+
+        return TrackOut(**resp2.data[0])
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 

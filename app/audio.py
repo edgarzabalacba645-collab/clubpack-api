@@ -196,13 +196,17 @@ def _medir_loudness(ruta: Path) -> dict[str, float] | None:
     return valores
 
 
-def transcodificar_a_mp3_320(ruta_entrada: Path, ruta_salida: Path) -> tuple[Path, str | None]:
+def transcodificar_a_mp3_320(ruta_entrada: Path, ruta_salida: Path) -> tuple[Path, str | None, bool]:
     """
     Convierte cualquier audio soportado por ffmpeg a MP3 CBR 320kbps,
     nivelando de paso el volumen a un estándar común (ver LOUDNORM_* acá
     arriba), leyendo desde `ruta_entrada` y escribiendo en `ruta_salida`
     (ambas ya en disco — nunca se cargan los bytes del audio en memoria
-    de Python). Devuelve (ruta_resultante, advertencia_o_None).
+    de Python). Devuelve (ruta_resultante, advertencia_o_None, nivelado).
+
+    `nivelado` (bool) dice si el nivelado de volumen se pudo aplicar de
+    verdad — lo usa /tracks/confirm para guardar tracks.loudness_lufs
+    (ver sql/023_nivelado_volumen.sql) solo cuando corresponde.
 
     Si ffmpeg no está disponible, deja `ruta_entrada` tal cual (sin
     convertir ni nivelar) y avisa — para no romper el flujo en un
@@ -214,7 +218,7 @@ def transcodificar_a_mp3_320(ruta_entrada: Path, ruta_salida: Path) -> tuple[Pat
     if not _hay_herramienta("ffmpeg"):
         aviso = "ffmpeg no está instalado en este servidor — se subió el archivo sin convertir a MP3 320."
         logger.warning(aviso)
-        return ruta_entrada, aviso
+        return ruta_entrada, aviso, False
 
     medicion = _medir_loudness(ruta_entrada)
     logger.info("transcodificar_a_mp3_320: medición de volumen lista — %s", _memoria_mb())
@@ -257,7 +261,7 @@ def transcodificar_a_mp3_320(ruta_entrada: Path, ruta_salida: Path) -> tuple[Pat
             f"No se pudo convertir el audio a MP3 320kbps: {resultado.stderr.decode(errors='ignore')[-500:]}"
         )
     logger.info("transcodificar_a_mp3_320: listo (nivelado=%s) — %s", bool(medicion), _memoria_mb())
-    return ruta_salida, None
+    return ruta_salida, None, bool(medicion)
 
 
 def obtener_duracion_seg(ruta_mp3: Path) -> int | None:

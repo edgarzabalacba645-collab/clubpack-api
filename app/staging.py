@@ -61,6 +61,13 @@ class ArchivoEnEspera:
     # pesado en la misma request es presupuesto de memoria/CPU que no
     # sobra en el plan gratis de Render (ver nota en app/audio.py).
     fingerprint: str | None = None
+    # Si transcodificar_a_mp3_320 (ver app/audio.py) pudo nivelar el
+    # volumen de este archivo — /tracks/confirm lo usa para guardar
+    # tracks.loudness_lufs solo cuando corresponde (ver
+    # sql/023_nivelado_volumen.sql). El archivo en sí (ruta_mp3) ya salió
+    # nivelado de /analyze si esto es True; acá solo viaja el dato para
+    # no tener que volver a medir el volumen una segunda vez.
+    nivelado: bool = False
     expira_en: float = field(default_factory=lambda: time.time() + settings.STAGING_TTL_SEG)
 
 
@@ -89,6 +96,7 @@ def guardar(
     nombre_original: str,
     usuario_id: str,
     fingerprint: str | None = None,
+    nivelado: bool = False,
 ) -> str:
     """
     Mueve (no copia) el MP3 ya transcodificado desde su ubicación temporal
@@ -106,6 +114,7 @@ def guardar(
             nombre_original=nombre_original,
             usuario_id=usuario_id,
             fingerprint=fingerprint,
+            nivelado=nivelado,
         )
         return staging_id
 

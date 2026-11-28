@@ -28,6 +28,8 @@ memoria de Python ya no crece con el tamaño del archivo.
 import io
 import json
 import logging
+import math
+import re
 import resource
 import shutil
 import subprocess
@@ -130,24 +132,110 @@ def precalentar_librosa() -> None:
         )
 
 
+# Nivelado de volumen (EBU R128 / loudnorm de ffmpeg), para que un tema
+# grabado bajo y uno masterizado fuerte no suenen a volúmenes muy
+# distintos uno atrás del otro en una sesión de DJ:
+#   -14 LUFS integrado  → el mismo estándar que usan Spotify/YouTube
+#                         Music para música comercial; la mayoría de
+#                         los temas de baile ya vienen masterizados
+#                         cerca de ahí, así que el ajuste suele ser chico.
+#   -1.0 dBTP de pico    → deja margen para que la reencodeada a MP3 no
+#                         termine generando picos por encima de 0dBFS
+#                         (los "picos entre muestras" que puede sumar
+#                         cualquier códec con pérdida).
+#   11 LU de rango       → el valor por default recomendado en la norma
+#                         EBU R128, no comprime la dinámica del tema.
+LOUDNORM_I = -14.0
+LOUDNORM_TP = -1.0
+LOUDNORM_LRA = 11.0
+
+
+def _medir_loudness(ruta: Path) -> dict[str, float] | None:
+    """
+    Primera pasada de ffmpeg (solo mide, no genera ningún archivo): corre
+    el filtro loudnorm en modo "print_format=json" para obtener la
+    sonoridad real del tema (input_i/input_tp/input_lra/input_thresh) y
+    cuánto ajuste haría falta (target_offset). Con esos datos, la
+    segunda pasada (más abajo) puede aplicar un ajuste LINEAL de
+    ganancia en vez de la compresión dinámica que aplicaría loudnorm a
+    ciegas con una sola pasada — un solo corrimiento de volumen prolijo,
+    sin tocarle la dinámica al tema.
+
+    Devuelve None si no se pudo medir (archivo corrupto, completamente
+    silencioso, etc.) — quien llama debe degradar con gracia a "no
+    normalizar" en vez de romper la subida por esto.
+    """
+    resultado = subprocess.run(
+        [
+            "ffmpeg", "-i", str(ruta),
+            "-af", f"loudnorm=I={LOUDNORM_I}:TP={LOUDNORM_TP}:LRA={LOUDNORM_LRA}:print_format=json",
+            "-f", "null", "-",
+        ],
+        capture_output=True,
+    )
+    salida = resultado.stderr.decode(errors="ignore")
+    coincidencia = re.search(r"\{\s*\"input_i\".*?\}", salida, re.DOTALL)
+    if not coincidencia:
+        logger.warning("No se pudo medir el volumen del audio (sin bloque JSON de loudnorm) — %s", salida[-300:])
+        return None
+    try:
+        datos = json.loads(coincidencia.group(0))
+        valores = {clave: float(valor) for clave, valor in datos.items() if clave != "normalization_type"}
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("No se pudo interpretar la medición de volumen del audio — %s", coincidencia.group(0))
+        return None
+
+    # float() parsea "nan"/"-inf"/"inf" sin tirar ValueError — pasa con
+    # un tema completamente silencioso (input_i da "-inf": no hay ningún
+    # volumen que medir ni ganancia sensata que aplicar). Pasarle eso tal
+    # cual a ffmpeg en la segunda pasada (más abajo) no degrada con
+    # gracia: tira el filtro entero y rompe la conversión completa.
+    if not all(math.isfinite(v) for v in valores.values()):
+        logger.warning("Medición de volumen no numérica (tema silencioso o muy corto) — %s", valores)
+        return None
+    return valores
+
+
 def transcodificar_a_mp3_320(ruta_entrada: Path, ruta_salida: Path) -> tuple[Path, str | None]:
     """
     Convierte cualquier audio soportado por ffmpeg a MP3 CBR 320kbps,
-    leyendo desde `ruta_entrada` y escribiendo en `ruta_salida` (ambas
-    ya en disco — nunca se cargan los bytes del audio en memoria de
-    Python). Devuelve (ruta_resultante, advertencia_o_None).
+    nivelando de paso el volumen a un estándar común (ver LOUDNORM_* acá
+    arriba), leyendo desde `ruta_entrada` y escribiendo en `ruta_salida`
+    (ambas ya en disco — nunca se cargan los bytes del audio en memoria
+    de Python). Devuelve (ruta_resultante, advertencia_o_None).
 
     Si ffmpeg no está disponible, deja `ruta_entrada` tal cual (sin
-    convertir) y avisa — para no romper el flujo en un entorno sin ffmpeg.
+    convertir ni nivelar) y avisa — para no romper el flujo en un
+    entorno sin ffmpeg. Si ffmpeg sí está pero no se pudo medir el
+    volumen (ver _medir_loudness), se sigue convirtiendo a MP3 320 igual
+    que antes, simplemente sin el nivelado — tampoco es motivo para
+    romper la subida.
     """
     if not _hay_herramienta("ffmpeg"):
         aviso = "ffmpeg no está instalado en este servidor — se subió el archivo sin convertir a MP3 320."
         logger.warning(aviso)
         return ruta_entrada, aviso
 
+    medicion = _medir_loudness(ruta_entrada)
+    logger.info("transcodificar_a_mp3_320: medición de volumen lista — %s", _memoria_mb())
+
+    filtro_audio = f"loudnorm=I={LOUDNORM_I}:TP={LOUDNORM_TP}:LRA={LOUDNORM_LRA}"
+    if medicion:
+        # Segunda pasada con los valores medidos (linear=true): un único
+        # corrimiento de ganancia prolijo. Si el corrimiento necesario
+        # fuera demasiado grande para hacerse sin recortar picos, ffmpeg
+        # cae solo a modo dinámico (gating) en vez de romper — ver su
+        # propia doc del filtro loudnorm.
+        filtro_audio += (
+            f":measured_I={medicion['input_i']}:measured_TP={medicion['input_tp']}"
+            f":measured_LRA={medicion['input_lra']}:measured_thresh={medicion['input_thresh']}"
+            f":offset={medicion['target_offset']}:linear=true"
+        )
+
     resultado = subprocess.run(
         [
             "ffmpeg", "-y", "-i", str(ruta_entrada),
+            "-af", filtro_audio,
             "-codec:a", "libmp3lame", "-b:a", "320k",
             # "-codec:v copy" conserva la carátula embebida (si el
             # archivo original trae una) como "attached_pic" en el
@@ -168,7 +256,7 @@ def transcodificar_a_mp3_320(ruta_entrada: Path, ruta_salida: Path) -> tuple[Pat
         raise RuntimeError(
             f"No se pudo convertir el audio a MP3 320kbps: {resultado.stderr.decode(errors='ignore')[-500:]}"
         )
-    logger.info("transcodificar_a_mp3_320: listo — %s", _memoria_mb())
+    logger.info("transcodificar_a_mp3_320: listo (nivelado=%s) — %s", bool(medicion), _memoria_mb())
     return ruta_salida, None
 
 
